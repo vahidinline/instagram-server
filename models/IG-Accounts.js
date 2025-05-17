@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const IGAcoountSchema = new mongoose.Schema({
+const IGAccountSchema = new mongoose.Schema({
   userId: {
     type: String,
     required: true,
@@ -24,4 +24,4 @@ const IGAcoountSchema = new mongoose.Schema({
   },
 });
 
-module.exports = mongoose.model('IGAcoount', IGAcoountSchema);
+module.exports = mongoose.model('IGAcoount', IGAccountSchema);

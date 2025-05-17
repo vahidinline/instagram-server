@@ -14,7 +14,9 @@ let dotenv = require('dotenv').config();
 app.set('port', process.env.PORT || 3004);
 app.listen(app.get('port'));
 
-app.use(xhub({ algorithm: 'sha1', secret: process.env.APP_SECRET }));
+app.use(
+  xhub({ algorithm: 'sha1', secret: process.env.INSTAGRAM_CLIENT_SECRET })
+);
 app.use(bodyParser.json());
 
 const db = require('./models/index.js');
@@ -37,8 +39,10 @@ db.mongoose
   });
 
 const Auth = require('./routes/auth');
+const Accounts = require('./routes/accounts.js');
 
 app.use('/auth', Auth);
+app.use('/accounts', Accounts);
 
 var token = process.env.TOKEN || 'token';
 var received_updates = [];
