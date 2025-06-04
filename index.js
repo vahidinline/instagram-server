@@ -101,18 +101,17 @@ app.post('/facebook', function (req, res) {
 
 app.post('/instagram', async function (req, res) {
   console.log('📬 Webhook POST /instagram triggered');
-
-  if (!req.isXHubValid()) {
-    console.log('⛔ Invalid X-Hub signature');
-    return res.sendStatus(401);
-  }
   console.log(
     '✅ Full Instagram Webhook Payload:',
     JSON.stringify(req.body, null, 2)
   );
 
+  if (!req.isXHubValid()) {
+    console.log('⛔ Invalid X-Hub signature');
+    return res.sendStatus(401);
+  }
+
   const entries = req.body.entry || [];
-  let hasComment = false;
 
   for (const entry of entries) {
     const changes = entry.changes || [];
@@ -120,9 +119,10 @@ app.post('/instagram', async function (req, res) {
       console.log('➡️ Checking change field:', change.field);
       console.log('🔍 Change object:', JSON.stringify(change, null, 2));
 
-      if (change.field === 'comments') {
-        hasComment = true;
-        const comment = change.value;
+      const { field, value } = change;
+
+      if (field === 'comments' || field === 'live_comments') {
+        const comment = value;
 
         const aiPayload = {
           userId: '123',
@@ -135,37 +135,26 @@ app.post('/instagram', async function (req, res) {
           },
         };
 
-        console.log(
-          '📦 Sending to n8n. Payload:',
-          JSON.stringify(aiPayload, null, 2)
-        );
-
         try {
           const response = await axios.post(
             'https://mcp.vahidafshari.com/webhook/ig-ai-reply',
             aiPayload
           );
-
           console.log('✅ Sent to n8n. AI response:', response.data);
-          return res
-            .status(200)
-            .json({ success: true, aiReply: response.data });
+          return res.json({ success: true, aiReply: response.data });
         } catch (err) {
           console.error(
             '❌ Error sending to n8n:',
             err.response?.data || err.message
           );
-          return res.status(500).json({ error: 'Failed to send to n8n' });
         }
+      } else {
+        console.log('ℹ️ No comment field in payload.');
       }
     }
   }
 
-  if (!hasComment) {
-    console.log('ℹ️ No comment field in payload.');
-  }
-
-  return res.sendStatus(200);
+  res.sendStatus(200);
 });
 
 app.post('/threads', function (req, res) {
