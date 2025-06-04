@@ -10,6 +10,10 @@ const IGConnections = new mongoose.Schema({
     type: String,
     required: true,
   },
+  profile_picture_url: {
+    type: String,
+    required: true,
+  },
   access_token: {
     type: String,
     required: true,
