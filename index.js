@@ -141,7 +141,31 @@ app.post('/instagram', async function (req, res) {
             aiPayload
           );
           console.log('✅ Sent to n8n. AI response:', response.data);
-          return res.json({ success: true, aiReply: response.data });
+          const aiReply = response.data;
+          console.log('🤖 AI response:', aiReply);
+
+          // Reply to comment using Instagram Graph API
+          const replyRes = await axios.post(
+            `https://graph.instagram.com/v23.0/${comment.id}/replies`,
+            {
+              message: aiReply,
+            },
+            {
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              params: {
+                access_token: process.env.IG_USER_TOKEN, // Use your token securely
+              },
+            }
+          );
+
+          console.log(
+            '✅ Successfully replied to comment:',
+            replyRes.data,
+            comment.id
+          );
+          return res.status(200).json({ success: true, aiReply });
         } catch (err) {
           console.error(
             '❌ Error sending to n8n:',
