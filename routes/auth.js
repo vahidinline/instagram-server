@@ -6,7 +6,7 @@ const axios = require('axios');
 
 router.get('/callback', async (req, res) => {
   let { code, state, userId: queryUserId } = req.query; // Renamed userId from query to avoid conflict
-
+  console.log('Received query parameters:', req.query);
   // --- BEGIN DEBUGGING FOR ENV VARS ---
   // Remove these logs in production, especially the secret
   console.log('--- Environment Variable Check ---');
