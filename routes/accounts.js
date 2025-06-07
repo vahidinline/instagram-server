@@ -13,8 +13,7 @@ router.get('/', async (req, res) => {
 
   try {
     const accounts = await IGConnections.find({ app_userId: userId }).lean();
-    console.log('accounts:', accounts);
-
+    console.log(accounts);
     if (!accounts || accounts.length === 0) {
       return res.status(404).json({ message: 'No accounts found' });
     }
@@ -22,12 +21,13 @@ router.get('/', async (req, res) => {
       return {
         id: account._id,
         userId: account.app_userId,
-        ig_accountId: account.ig_accountId,
+        ig_accountId: account.ig_userId,
         account_name: 'account_name',
         created_at: account.token_expires_at,
         expires_at: account.token_expires_at,
       };
     });
+    console.log(response);
 
     res.status(200).json(accounts);
   } catch (error) {
