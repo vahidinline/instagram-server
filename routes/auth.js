@@ -163,6 +163,12 @@ router.get('/callback', async (req, res) => {
     console.log('Redirecting to:', redirectUrl);
 
     if (appUserId && finalIgUserId) {
+      console.log(
+        'Saving Instagram connection with appUserId:',
+        appUserId,
+        'and finalIgUserId:',
+        finalIgUserId
+      );
       const igConnection = new IGConnections({
         app_userId: appUserId,
         ig_userId: finalIgUserId,
