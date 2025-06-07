@@ -188,7 +188,8 @@ router.get('/callback', async (req, res) => {
         { appUserId, finalIgUserId }
       );
     }
-
+    console.log('Redirecting to:', redirectUrl);
+    // Redirect to the final URL with access token and other parameters
     return res.redirect(redirectUrl);
   } catch (error) {
     console.error('Instagram auth callback error:', error.message);
