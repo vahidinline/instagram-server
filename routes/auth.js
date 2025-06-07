@@ -5,7 +5,7 @@ const router = express.Router();
 const axios = require('axios');
 
 router.get('/callback', async (req, res) => {
-  let { code, state, userId: queryUserId } = req.query; // Renamed userId from query to avoid conflict
+  let { code, state, userId } = req.query; // Renamed userId from query to avoid conflict
   console.log('Received query parameters:', req.query);
   // --- BEGIN DEBUGGING FOR ENV VARS ---
   // Remove these logs in production, especially the secret
@@ -30,8 +30,8 @@ router.get('/callback', async (req, res) => {
     code,
     'State:',
     state,
-    'QueryUserId:',
-    queryUserId
+    'userId:',
+    userId
   );
 
   if (!code) {
@@ -60,7 +60,7 @@ router.get('/callback', async (req, res) => {
   // Avoid logging full tokenParams if client_secret is included and not masked
 
   let parsedState = {};
-  let appUserId = queryUserId; // Default to userId from query if state doesn't provide one
+  let appUserId = userId; // Default to userId from query if state doesn't provide one
 
   if (state) {
     try {
