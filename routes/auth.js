@@ -177,6 +177,7 @@ router.get('/callback', async (req, res) => {
         token_created_at: new Date(),
         last_update: new Date(),
         account_name: finalAccountName,
+        profile_picture_url: parsedState.profile_picture_url || '',
       });
       const res = await igConnection.save();
       console.log('Instagram connection saved successfully:', res);
