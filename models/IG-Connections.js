@@ -4,11 +4,11 @@ const IGConnections = new mongoose.Schema({
   app_userId: {
     type: String,
     required: true,
-    unique: true,
   },
   ig_userId: {
     type: String,
     required: true,
+    unique: true,
   },
   profile_picture_url: {
     type: String,
