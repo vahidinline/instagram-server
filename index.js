@@ -19,7 +19,7 @@ const cors = require('cors');
 // Allow requests from Vite frontend
 app.use(
   cors({
-    origin: 'https://instabox.pages.dev/', // or '*' for development
+    origin: '*', // or '*' for development
     credentials: true,
   })
 );
