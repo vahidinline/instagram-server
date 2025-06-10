@@ -17,14 +17,19 @@ router.get('/', async (req, res) => {
     if (!accounts || accounts.length === 0) {
       return res.status(404).json({ message: 'No accounts found' });
     }
+    if (accounts.account_status == 'removed') {
+      return res.status(404).json({ message: 'No accounts found' });
+    }
     const response = accounts.map((account) => {
       return {
         id: account._id,
         userId: account.app_userId,
         ig_accountId: account.ig_userId,
-        account_name: 'account_name',
+        account_name: account.account_name,
         created_at: account.token_expires_at,
         expires_at: account.token_expires_at,
+        account_status: account.account_status,
+        profile_picture_url: account.profile_picture_url,
       };
     });
     console.log(response);

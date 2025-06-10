@@ -34,6 +34,11 @@ const IGConnections = new mongoose.Schema({
     type: String,
     required: true,
   },
+  account_status: {
+    type: String,
+    enum: ['active', 'inactive', 'suspended', 'deleted'],
+    default: 'active',
+  },
 });
 
 module.exports = mongoose.model('IGConnections', IGConnections);
