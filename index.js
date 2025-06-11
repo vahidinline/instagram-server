@@ -125,7 +125,7 @@ app.post('/instagram', async function (req, res) {
         const comment = value;
 
         const aiPayload = {
-          userId: '123',
+          userId: entry.id, // Use entry.id as userId
           igAccountId: entry.id,
           eventType: 'comment',
           eventPayload: {
@@ -134,6 +134,8 @@ app.post('/instagram', async function (req, res) {
             from: comment.from,
           },
         };
+
+        console.log('🤖 AI Payload:', JSON.stringify(aiPayload, null, 2));
 
         try {
           const response = await axios.post(
