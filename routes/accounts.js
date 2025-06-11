@@ -14,12 +14,14 @@ router.get('/', async (req, res) => {
   try {
     const accounts = await IGConnections.find({ app_userId: userId }).lean();
     console.log(accounts);
-    if (!accounts || accounts.length === 0) {
+    if (
+      !accounts ||
+      accounts.length === 0 ||
+      accounts.some((account) => account.account_status === 'removed')
+    ) {
       return res.status(404).json({ message: 'No accounts found' });
     }
-    if (accounts.account_status == 'removed') {
-      return res.status(404).json({ message: 'No accounts found' });
-    }
+
     const response = accounts.map((account) => {
       return {
         id: account._id,

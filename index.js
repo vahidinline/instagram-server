@@ -112,7 +112,7 @@ app.post('/instagram', async function (req, res) {
   }
 
   const entries = req.body.entry || [];
-
+  console.log('📜 Entries:', JSON.stringify(entries, null, 2));
   for (const entry of entries) {
     const changes = entry.changes || [];
     for (const change of changes) {
