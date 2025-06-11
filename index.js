@@ -176,6 +176,10 @@ app.post('/instagram', async function (req, res) {
         }
       } else {
         console.log('ℹ️ No comment field in payload.');
+        console.log(
+          '🔍 Change object without comment field:',
+          JSON.stringify(change, null, 2)
+        );
       }
     }
   }
