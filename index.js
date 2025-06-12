@@ -162,11 +162,7 @@ app.post('/instagram', async function (req, res) {
             }
           );
 
-          console.log(
-            '✅ Successfully replied to comment:',
-            replyRes.data,
-            comment.id
-          );
+          console.log('✅ Successfully replied to comment:', replyRes);
           return res.status(200).json({ success: true, aiReply });
         } catch (err) {
           console.error(
