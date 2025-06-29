@@ -19,6 +19,7 @@ const instagramCommentSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  updatedAt: Date,
 });
 
 module.exports = mongoose.model('InstagramComment', instagramCommentSchema);
