@@ -15,8 +15,6 @@ const igComments = async (entry, field, value) => {
     },
   };
 
-  console.log('🤖 AI Payload:', JSON.stringify(aiPayload, null, 2));
-
   try {
     // 1. Save incoming comment to MongoDB
     await InstagramComment.create({
@@ -28,14 +26,14 @@ const igComments = async (entry, field, value) => {
       from: comment.from,
       createdAt: new Date(),
     });
-
+    console.log('✅ Saved comment to DB:', comment.id);
     // 2. Send comment to AI engine
     const response = await axios.post(
       'https://mcp.vahidafshari.com/webhook/ig-ai-reply',
       aiPayload
     );
     const aiReplyText = response.data;
-
+    console.log('aiReplyText:', aiReplyText);
     // 3. Reply to comment via Instagram Graph API
     await axios.post(
       `https://graph.instagram.com/v23.0/${comment.id}/replies`,
