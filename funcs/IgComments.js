@@ -1,9 +1,11 @@
-const axios = require('axios'); // must be imported
+const axios = require('axios');
+const InstagramComment = require('../models/InstagramComment'); // adjust the path as needed
+
 const igComments = async (entry, field, value) => {
   const comment = value;
 
   const aiPayload = {
-    userId: entry.id, // Use entry.id as userId
+    userId: entry.id,
     igAccountId: entry.id,
     eventType: 'comment',
     eventPayload: {
@@ -16,15 +18,25 @@ const igComments = async (entry, field, value) => {
   console.log('🤖 AI Payload:', JSON.stringify(aiPayload, null, 2));
 
   try {
+    // 1. Save incoming comment to DB
+    const savedComment = await InstagramComment.create({
+      commentId: comment.id,
+      parentId: comment.parent_id,
+      text: comment.text,
+      mediaId: comment.media?.id,
+      mediaType: comment.media?.media_product_type,
+      from: comment.from,
+    });
+
+    // 2. Send to AI engine (n8n)
     const response = await axios.post(
       'https://mcp.vahidafshari.com/webhook/ig-ai-reply',
       aiPayload
     );
-    console.log('✅ Sent to n8n. AI response:', response.data);
     const aiReply = response.data;
-    console.log('🤖 AI response:', aiReply);
+    console.log('✅ AI Response:', aiReply);
 
-    // Reply to comment using Instagram Graph API
+    // 3. Send reply to Instagram comment
     const replyRes = await axios.post(
       `https://graph.instagram.com/v23.0/${comment.id}/replies`,
       {
@@ -35,18 +47,27 @@ const igComments = async (entry, field, value) => {
           'Content-Type': 'application/json',
         },
         params: {
-          access_token: process.env.IG_USER_TOKEN, // Use your token securely
+          access_token: process.env.IG_USER_TOKEN,
         },
       }
     );
 
-    console.log('✅ Successfully replied to comment:', replyRes);
-    return res.status(200).json({ success: true, aiReply });
+    console.log('✅ Successfully replied to comment:', replyRes.data);
+
+    // 4. Update DB with AI reply
+    savedComment.aiReply = {
+      text: aiReply,
+      repliedAt: new Date(),
+    };
+    await savedComment.save();
+
+    return { success: true, aiReply };
   } catch (err) {
     console.error(
-      '❌ Error sending to n8n:',
+      '❌ Error handling IG comment:',
       err.response?.data || err.message
     );
+    return { success: false, error: err.message };
   }
 };
 
