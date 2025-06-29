@@ -50,6 +50,7 @@ db.mongoose
 
 const Auth = require('./routes/auth');
 const Accounts = require('./routes/accounts.js');
+const igComments = require('./funcs/IgComments.js');
 
 app.use('/auth', Auth);
 app.use('/accounts', Accounts);
