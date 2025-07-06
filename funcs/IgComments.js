@@ -34,13 +34,26 @@ const igComments = async (entry, field, value) => {
     );
     const aiReplyText = response.data;
     console.log('aiReplyText:', aiReplyText);
-    // 3. Reply to comment via Instagram Graph API
+    // 3. Send a private reply (DM) to the commenter via Instagram Graph API
+    const yourIgAccountId = entry.id; // The ID of YOUR Instagram Professional Account
+    const commentIdToReplyTo = comment.id; // The ID of the comment you received
+
     await axios.post(
-      `https://graph.instagram.com/v23.0/${comment.id}/replies`,
-      { message: aiReplyText },
+      `https://graph.facebook.com/v20.0/${yourIgAccountId}/messages`, // Use graph.facebook.com endpoint
       {
-        headers: { 'Content-Type': 'application/json' },
-        params: { access_token: process.env.IG_USER_TOKEN },
+        recipient: {
+          comment_id: commentIdToReplyTo,
+        },
+        message: {
+          text: aiReplyText,
+        },
+        messaging_type: 'RESPONSE', // Good practice to include messaging_type
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.IG_PAGE_TOKEN}`, // Use Authorization header
+          'Content-Type': 'application/json',
+        },
       }
     );
 
