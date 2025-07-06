@@ -51,7 +51,7 @@ const igComments = async (entry, field, value) => {
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.IG_PAGE_TOKEN}`, // Use Authorization header
+          Authorization: `Bearer ${process.env.TOKEN}`, // Use Authorization header
           'Content-Type': 'application/json',
         },
       }
