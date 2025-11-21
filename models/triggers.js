@@ -1,41 +1,19 @@
 const mongoose = require('mongoose');
 
-const TriggersSchema = new mongoose.Schema({
-  accountId: {
+const TriggerSchema = new mongoose.Schema({
+  // The App User who owns this trigger
+  app_userId: { type: String, required: true },
+  // The specific IG Page ID this trigger applies to
+  ig_accountId: { type: String, required: true },
+  keyword: { type: String, required: true, lowercase: true },
+  match_type: {
     type: String,
-    required: true,
-    unique: true,
+    enum: ['exact', 'contains', 'starts_with'],
+    default: 'contains',
   },
-  name: {
-    type: String,
-    required: true,
-  },
-  type: {
-    type: String,
-    required: true,
-  },
-  message: {
-    type: String,
-    required: true,
-  },
-  status: {
-    type: String,
-    required: true,
-  },
-  created_at: {
-    type: Date,
-    default: Date.now,
-  },
-  modified_at: {
-    type: Date,
-    default: Date.now,
-  },
+  response_text: { type: String, required: true },
+  is_active: { type: Boolean, default: true },
+  type: { type: String, enum: ['dm', 'comment', 'both'], default: 'both' },
 });
 
-// Update modified_at field before saving
-TriggersSchema.pre('save', function (next) {
-  this.modified_at = Date.now();
-  next();
-});
-
-module.exports = mongoose.model('Triggers', TriggersSchema);
+module.exports = mongoose.model('Triggers', TriggerSchema);
