@@ -12,7 +12,7 @@ const IGAccountSchema = new mongoose.Schema({
   },
   profile_picture_url: {
     type: String,
-    required: true,
+    required: false,
   },
   created_at: {
     type: Date,
@@ -24,4 +24,4 @@ const IGAccountSchema = new mongoose.Schema({
   },
 });
 
-module.exports = mongoose.model('IGAcoount', IGAccountSchema);
+module.exports = mongoose.model('IGAccount', IGAccountSchema);

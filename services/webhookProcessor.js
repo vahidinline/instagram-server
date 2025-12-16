@@ -1,126 +1,170 @@
 const axios = require('axios');
 const IGConnections = require('../models/IG-Connections');
 const Triggers = require('../models/Triggers');
+const Flows = require('../models/Flows');
+const MessageLog = require('../models/MessageLogs');
 
-// Base URL for Instagram Graph API (New Flow)
-const GRAPH_URL = 'https://graph.instagram.com/v21.0';
+// نسخه API (تست شده و سالم)
+const GRAPH_URL = 'https://graph.instagram.com/v22.0';
 
 /**
- * Retrieves the Long-Lived Access Token for a specific IG Account
+ * پردازش پیام دایرکت (DM)
  */
-async function getAccessToken(igAccountId) {
-  const connection = await IGConnections.findOne({ ig_userId: igAccountId });
-  if (!connection) {
-    console.error(`❌ No connection found for IG Account: ${igAccountId}`);
-    return null;
+async function handleMessage(entry, messaging) {
+  // 1. جلوگیری از لوپ (پیام‌های اکو که خودمان فرستادیم)
+  if (messaging.message && messaging.message.is_echo) {
+    return;
   }
-  return connection.access_token;
+
+  const igAccountId = entry.id; // اکانت بیزینس ما
+  const senderId = messaging.sender.id; // مشتری
+  const text = messaging.message?.text;
+
+  // فعلاً فقط پیام‌های متنی را پردازش می‌کنیم
+  if (!text) return;
+
+  console.log(`📥 New Message from ${senderId}: ${text}`);
+
+  // 2. ذخیره پیام ورودی در دیتابیس (Log Incoming)
+  const incomingLog = await MessageLog.create({
+    ig_accountId: igAccountId,
+    sender_id: senderId,
+    content: text,
+    direction: 'incoming',
+    status: 'received',
+  });
+
+  // 3. جستجوی تریگر
+  const trigger = await findMatchingTrigger(igAccountId, text, 'dm');
+
+  if (trigger) {
+    console.log(`💡 Trigger Match: [${trigger.keywords.join(', ')}]`);
+
+    // اگر تریگر به یک Flow وصل بود
+    if (trigger.flow_id) {
+      const flow = await Flows.findById(trigger.flow_id);
+
+      if (flow) {
+        const token = await getAccessToken(igAccountId);
+
+        if (token) {
+          // ارسال تمام پیام‌های موجود در Flow (شاید چند تا باشه)
+          for (const msg of flow.messages) {
+            const sent = await sendReply(
+              igAccountId,
+              senderId,
+              msg.content,
+              token
+            );
+
+            // 4. ذخیره پیام خروجی (Log Outgoing)
+            if (sent) {
+              await MessageLog.create({
+                ig_accountId: igAccountId,
+                sender_id: senderId,
+                content: msg.content,
+                direction: 'outgoing',
+                status: 'replied',
+                triggered_by: trigger._id,
+              });
+            }
+          }
+
+          // آپدیت وضعیت پیام ورودی به "پردازش شده"
+          incomingLog.status = 'processed';
+          await incomingLog.save();
+        } else {
+          console.error('❌ No Access Token found for response.');
+        }
+      } else {
+        console.error('❌ Flow not found for this trigger.');
+      }
+    } else {
+      console.error('❌ Trigger has no Flow ID attached.');
+    }
+  } else {
+    console.log('🤖 No trigger found. (Ignored or ready for AI)');
+    // اینجا در آینده کد اتصال به هوش مصنوعی قرار می‌گیرد
+  }
 }
 
 /**
- * Finds a matching trigger based on text content
+ * جستجوی هوشمند تریگر در بین کلمات کلیدی مختلف
  */
 async function findMatchingTrigger(igAccountId, text, type) {
   if (!text) return null;
 
+  // دریافت همه تریگرهای فعال
   const triggers = await Triggers.find({
     ig_accountId: igAccountId,
     is_active: true,
     type: { $in: [type, 'both'] },
   });
 
-  const lowerText = text.toLowerCase();
+  const lowerText = text.toLowerCase().trim();
 
-  // Priority 1: Exact Match
-  const exact = triggers.find(
-    (t) => t.match_type === 'exact' && t.keyword === lowerText
-  );
-  if (exact) return exact;
+  for (const trigger of triggers) {
+    // اگر keywords تعریف نشده بود، رد کن
+    if (!trigger.keywords || trigger.keywords.length === 0) continue;
 
-  // Priority 2: Starts With
-  const starts = triggers.find(
-    (t) => t.match_type === 'starts_with' && lowerText.startsWith(t.keyword)
-  );
-  if (starts) return starts;
+    // بررسی تمام کلمات کلیدی داخل آرایه
+    for (const keyword of trigger.keywords) {
+      // حالت ۱: تطابق دقیق (Exact Match)
+      if (trigger.match_type === 'exact') {
+        if (lowerText === keyword) {
+          return trigger;
+        }
+      }
 
-  // Priority 3: Contains
-  const contains = triggers.find(
-    (t) => t.match_type === 'contains' && lowerText.includes(t.keyword)
-  );
-  if (contains) return contains;
+      // حالت ۲: شامل بودن (Contains)
+      else if (trigger.match_type === 'contains') {
+        if (lowerText.includes(keyword)) {
+          return trigger;
+        }
+      }
+    }
+  }
 
   return null;
 }
 
 /**
- * Handle Incoming Comments
+ * دریافت توکن دسترسی
  */
-async function handleComment(entry, change) {
-  const value = change.value;
-  const igAccountId = entry.id; // The Professional Account ID
-  const text = value.text;
-  const commentId = value.id;
+async function getAccessToken(igAccountId) {
+  const conn = await IGConnections.findOne({ ig_userId: igAccountId });
+  return conn ? conn.access_token : null;
+}
 
-  // Don't reply to self (optional check if needed, usually webhook excludes self)
+/**
+ * ارسال پیام به API اینستاگرام
+ */
+async function sendReply(myId, recipientId, text, token) {
+  try {
+    await axios.post(
+      `${GRAPH_URL}/me/messages`,
+      {
+        recipient: { id: recipientId },
+        message: { text: text },
+      },
+      { params: { access_token: token } }
+    );
 
-  const trigger = await findMatchingTrigger(igAccountId, text, 'comment');
-
-  if (trigger) {
-    const accessToken = await getAccessToken(igAccountId);
-    if (!accessToken) return;
-
-    console.log(`✅ Trigger found for comment: "${trigger.keyword}"`);
-
-    try {
-      // Reply to Comment Endpoint
-      // POST https://graph.instagram.com/v21.0/{ig-comment-id}/replies
-      await axios.post(
-        `${GRAPH_URL}/${commentId}/replies`,
-        { message: trigger.response_text },
-        { params: { access_token: accessToken } }
-      );
-      console.log(`🚀 Replied to comment ${commentId}`);
-    } catch (e) {
-      console.error('❌ Comment Reply Failed:', e.response?.data || e.message);
-    }
+    console.log('✅ Reply Sent.');
+    return true;
+  } catch (e) {
+    console.error('❌ Send Error:', e.response?.data || e.message);
+    return false;
   }
 }
 
 /**
- * Handle Incoming Direct Messages
+ * پردازش کامنت (Placeholder)
  */
-async function handleMessage(entry, messaging) {
-  const igAccountId = entry.id;
-  const senderId = messaging.sender.id;
-  const text = messaging.message?.text;
-
-  if (!text) return;
-
-  const trigger = await findMatchingTrigger(igAccountId, text, 'dm');
-
-  if (trigger) {
-    const accessToken = await getAccessToken(igAccountId);
-    if (!accessToken) return;
-
-    console.log(`✅ Trigger found for DM: "${trigger.keyword}"`);
-
-    try {
-      // Send Message Endpoint
-      // POST https://graph.instagram.com/v21.0/me/messages
-      // Note: For 'Instagram API with Instagram Login', we use 'me' or the IG User ID
-      await axios.post(
-        `${GRAPH_URL}/${igAccountId}/messages`,
-        {
-          recipient: { id: senderId },
-          message: { text: trigger.response_text },
-        },
-        { params: { access_token: accessToken } }
-      );
-      console.log(`🚀 Replied to DM from ${senderId}`);
-    } catch (e) {
-      console.error('❌ DM Reply Failed:', e.response?.data || e.message);
-    }
-  }
+async function handleComment(entry, change) {
+  // لاجیک مشابه برای کامنت‌ها در اینجا پیاده می‌شود
+  // (با استفاده از match_type='comment')
+  console.log('💬 Comment event received (logic to be implemented)');
 }
 
-module.exports = { handleComment, handleMessage };
+module.exports = { handleMessage, handleComment };
