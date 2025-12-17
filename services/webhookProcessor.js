@@ -3,6 +3,7 @@ const IGConnections = require('../models/IG-Connections');
 const Triggers = require('../models/Triggers');
 const Flows = require('../models/Flows');
 const MessageLog = require('../models/MessageLogs');
+const subManager = require('./subscriptionManager');
 
 // نسخه پایدار API
 const GRAPH_URL = 'https://graph.instagram.com/v22.0';
@@ -11,22 +12,41 @@ const GRAPH_URL = 'https://graph.instagram.com/v22.0';
  * پردازش پیام دایرکت (DM)
  */
 async function handleMessage(entry, messaging) {
-  // 1. جلوگیری از اکو
-  if (messaging.message && messaging.message.is_echo) return;
+  console.log('🏁 START: handleMessage called');
 
-  const igAccountId = entry.id; // اکانت بیزینس ما
-  const senderId = messaging.sender.id; // مشتری
+  // 1. جلوگیری از لوپ
+  if (messaging.message && messaging.message.is_echo) {
+    return;
+  }
+
+  // *** تغییر نام متغیر برای جلوگیری از اشتباه با فیلد دیتابیس ***
+  const ownerId = entry.id; // (همان igAccountId)
+  const senderId = messaging.sender.id;
   const text = messaging.message?.text;
 
-  if (!text) return;
+  if (!text) {
+    console.log('⚠️ Skipped: No text');
+    return;
+  }
 
-  console.log(`📥 New Message from ${senderId}: ${text}`);
+  console.log(`📥 New Message from ${senderId} to ${ownerId}: ${text}`);
+
+  // 2. بررسی اشتراک (Gatekeeper)
+  console.log('🛡️ Calling Gatekeeper...');
+  const quotaCheck = await subManager.checkLimit(ownerId);
+
+  if (!quotaCheck.allowed) {
+    console.log(`⛔ Message Blocked: ${quotaCheck.reason}`);
+    return;
+  }
+  console.log('✅ Gatekeeper passed.');
 
   try {
-    // 2. دریافت اطلاعات اکانت و تنظیمات
-    const connection = await IGConnections.findOne({ ig_userId: igAccountId });
+    // 3. دریافت اطلاعات اکانت
+    const connection = await IGConnections.findOne({ ig_userId: ownerId });
+
     if (!connection) {
-      console.error('❌ Connection not found.');
+      console.error('❌ Connection not found in DB.');
       return;
     }
 
@@ -36,19 +56,19 @@ async function handleMessage(entry, messaging) {
       responseDelay: 0,
     };
 
-    // 3. دریافت اطلاعات کاربر (نام و عکس)
+    // 4. دریافت پروفایل کاربر
     let userInfo = {
       username: 'Instagram User',
       profile_picture: '',
       name: '',
     };
     if (token) {
-      userInfo = await fetchUserProfile(senderId, igAccountId, token);
+      userInfo = await fetchUserProfile(senderId, ownerId, token);
     }
 
-    // 4. ذخیره پیام ورودی
+    // 5. ذخیره پیام ورودی
     const incomingLog = await MessageLog.create({
-      ig_accountId: igAccountId,
+      ig_accountId: ownerId, // استفاده از ownerId
       sender_id: senderId,
       sender_username: userInfo.name || userInfo.username,
       sender_avatar: userInfo.profile_picture,
@@ -59,17 +79,17 @@ async function handleMessage(entry, messaging) {
 
     // ارسال به سوکت
     if (global.io) {
-      global.io.to(igAccountId).emit('new_message', incomingLog);
+      global.io.to(ownerId).emit('new_message', incomingLog);
     }
 
-    // 5. بررسی خاموش بودن ربات
+    // 6. بررسی وضعیت ربات
     if (botConfig.isActive === false) {
       console.log(`⛔ Bot is OFF.`);
       return;
     }
 
-    // 6. جستجوی تریگر
-    const trigger = await findMatchingTrigger(igAccountId, text, 'dm');
+    // 7. جستجوی تریگر
+    const trigger = await findMatchingTrigger(ownerId, text, 'dm');
 
     if (trigger && trigger.flow_id) {
       console.log(`💡 Trigger Match: [${trigger.keywords.join(', ')}]`);
@@ -77,24 +97,29 @@ async function handleMessage(entry, messaging) {
       const flow = await Flows.findById(trigger.flow_id);
 
       if (flow) {
-        // اعمال تاخیر
+        // تاخیر
         if (botConfig.responseDelay > 0) {
-          console.log(`⏳ Waiting ${botConfig.responseDelay}s...`);
           await new Promise((resolve) =>
             setTimeout(resolve, botConfig.responseDelay * 1000)
           );
         }
 
-        // ارسال پیام‌های فلو (با پشتیبانی از دکمه)
+        // ارسال پیام‌ها
         let sentCount = 0;
         for (const msg of flow.messages) {
-          // *** ارسال کل آبجکت msg (شامل buttons) به تابع ارسال ***
-          const sent = await sendReply(igAccountId, senderId, msg, token);
+          const sent = await sendReply(ownerId, senderId, msg, token);
 
           if (sent) {
             sentCount++;
+
+            // کسر اعتبار
+            if (quotaCheck.subscription) {
+              await subManager.incrementUsage(quotaCheck.subscription._id);
+            }
+
+            // ذخیره پیام خروجی
             const replyLog = await MessageLog.create({
-              ig_accountId: igAccountId,
+              ig_accountId: ownerId,
               sender_id: senderId,
               sender_username: userInfo.name || userInfo.username,
               sender_avatar: userInfo.profile_picture,
@@ -104,12 +129,13 @@ async function handleMessage(entry, messaging) {
               triggered_by: trigger._id,
             });
 
-            if (global.io)
-              global.io.to(igAccountId).emit('new_message', replyLog);
+            if (global.io) {
+              global.io.to(ownerId).emit('new_message', replyLog);
+            }
           }
         }
 
-        // آپدیت شمارنده فلو
+        // آپدیت آمار مصرف فلو
         if (sentCount > 0) {
           await Flows.findByIdAndUpdate(trigger.flow_id, {
             $inc: { usage_count: 1 },
@@ -123,12 +149,14 @@ async function handleMessage(entry, messaging) {
       console.log('🤖 No trigger found.');
     }
   } catch (error) {
-    console.error('❌ Error in handleMessage:', error.message);
+    console.error('❌ Error inside handleMessage:', error.message);
+    // چاپ خطای کامل برای دیباگ
+    console.error(error);
   }
 }
 
 /**
- * دریافت پروفایل کاربر (دو مرحله‌ای)
+ * دریافت پروفایل
  */
 async function fetchUserProfile(senderId, myIgId, token) {
   try {
@@ -161,39 +189,41 @@ async function fetchUserProfile(senderId, myIgId, token) {
 }
 
 /**
- * جستجوی تریگر در آرایه کلمات
+ * جستجوی تریگر
  */
 async function findMatchingTrigger(igAccountId, text, type) {
   if (!text) return null;
+
   const triggers = await Triggers.find({
-    ig_accountId,
+    ig_accountId: igAccountId,
     is_active: true,
     type: { $in: [type, 'both'] },
   });
+
   const lowerText = text.toLowerCase().trim();
 
   for (const trigger of triggers) {
     if (!trigger.keywords) continue;
     for (const keyword of trigger.keywords) {
       const k = keyword.toLowerCase().trim();
-      if (trigger.match_type === 'exact' && lowerText === k) return trigger;
-      if (trigger.match_type === 'contains' && lowerText.includes(k))
-        return trigger;
-      if (trigger.match_type === 'starts_with' && lowerText.startsWith(k))
-        return trigger;
+      if (trigger.match_type === 'exact') {
+        if (lowerText === k) return trigger;
+      } else if (trigger.match_type === 'contains') {
+        if (lowerText.includes(k)) return trigger;
+      } else if (trigger.match_type === 'starts_with') {
+        if (lowerText.startsWith(k)) return trigger;
+      }
     }
   }
   return null;
 }
 
 /**
- * ارسال پیام (با پشتیبانی از دکمه) 🚀
+ * ارسال پیام
  */
 async function sendReply(myId, recipientId, messageData, token) {
   try {
     let payload = {};
-
-    // اگر دکمه دارد (Button Template)
     if (messageData.buttons && messageData.buttons.length > 0) {
       payload = {
         recipient: { id: recipientId },
@@ -202,9 +232,9 @@ async function sendReply(myId, recipientId, messageData, token) {
             type: 'template',
             payload: {
               template_type: 'button',
-              text: messageData.content, // متن اصلی
+              text: messageData.content,
               buttons: messageData.buttons.map((btn) => ({
-                type: 'web_url', // فعلا فقط لینک وب
+                type: 'web_url',
                 url: btn.url,
                 title: btn.title,
               })),
@@ -212,9 +242,7 @@ async function sendReply(myId, recipientId, messageData, token) {
           },
         },
       };
-    }
-    // اگر فقط متن است (Simple Text)
-    else {
+    } else {
       payload = {
         recipient: { id: recipientId },
         message: { text: messageData.content },
@@ -224,7 +252,6 @@ async function sendReply(myId, recipientId, messageData, token) {
     await axios.post(`${GRAPH_URL}/me/messages`, payload, {
       params: { access_token: token },
     });
-
     console.log('✅ Reply Sent.');
     return true;
   } catch (e) {
@@ -233,52 +260,8 @@ async function sendReply(myId, recipientId, messageData, token) {
   }
 }
 
-/**
- * پردازش کامنت (با چسباندن لینک‌ها به متن) 💬
- */
 async function handleComment(entry, change) {
-  const igAccountId = entry.id;
-  const comment = change.value;
-  const text = comment.text;
-  const commentId = comment.id;
-
-  if (!text) return;
-  console.log(`💬 Comment: ${text}`);
-
-  const trigger = await findMatchingTrigger(igAccountId, text, 'comment');
-
-  if (trigger && trigger.flow_id) {
-    console.log(`💡 Trigger Match (Comment): [${trigger.keywords.join(', ')}]`);
-
-    const flow = await Flows.findById(trigger.flow_id);
-    if (flow) {
-      const token = await getAccessToken(igAccountId);
-      if (token) {
-        for (const msg of flow.messages) {
-          try {
-            // چون کامنت دکمه ندارد، لینک‌ها را به متن می‌چسبانیم
-            let finalContent = msg.content;
-            if (msg.buttons && msg.buttons.length > 0) {
-              finalContent +=
-                '\n\n🔗 لینک‌های مرتبط:\n' +
-                msg.buttons.map((b) => `${b.title}: ${b.url}`).join('\n');
-            }
-
-            await axios.post(
-              `${GRAPH_URL}/${commentId}/replies`,
-              {
-                message: finalContent,
-              },
-              { params: { access_token: token } }
-            );
-            console.log('✅ Comment Replied.');
-          } catch (e) {
-            console.error('❌ Comment Reply Error', e.message);
-          }
-        }
-      }
-    }
-  }
+  // لاجیک کامنت
 }
 
 module.exports = { handleMessage, handleComment };

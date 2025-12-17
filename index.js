@@ -1,3 +1,7 @@
+/**
+ * Main Server File - FINAL INTEGRATED VERSION
+ */
+
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -6,74 +10,74 @@ const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
 
+// Import Processor
 const processor = require('./services/webhookProcessor');
+
+// Database Connection
+const db = require('./models/index.js');
+db.mongoose
+  .connect(
+    `mongodb+srv://vahid_:${process.env.MONGODB_PASS}@cluster0.minxf.mongodb.net/${process.env.MONGODB_DB}`,
+    { useNewUrlParser: true, useUnifiedTopology: true }
+  )
+  .then(() => console.log('✅ MongoDB Connected Successfully.'))
+  .catch((err) => console.error('❌ MongoDB Connection Error:', err));
 
 const app = express();
 const server = http.createServer(app);
 
-// تنظیمات سوکت
+// Socket.io Setup
 const io = new Server(server, {
   cors: {
-    origin: '*', // اجازه به همه دامین‌ها
+    origin: '*',
     methods: ['GET', 'POST'],
   },
 });
-
-// ذخیره io در متغیر جهانی
 global.io = io;
 
 app.set('port', process.env.PORT || 3004);
 
+// Middlewares
 app.use(cors({ origin: '*', credentials: true }));
 app.use(
   xhub({ algorithm: 'sha1', secret: process.env.INSTAGRAM_CLIENT_SECRET })
 );
 app.use(bodyParser.json());
 
-// Database
-const db = require('./models/index.js');
-db.mongoose
-  .connect(
-    `mongodb+srv://vahid_:${process.env.MONGODB_PASS}@cluster0.minxf.mongodb.net/${process.env.MONGODB_DB}`
-  )
-  .then(() => console.log('✅ MongoDB Connected.'));
+// --- ROUTES IMPORTS ---
+const userAuthRoutes = require('./routes/userAuth');
+const instagramAuthRoutes = require('./routes/auth');
+const accountRoutes = require('./routes/accounts');
+const triggerRoutes = require('./routes/triggers');
+const flowRoutes = require('./routes/flows');
+const analyticsRoutes = require('./routes/analytics');
+const inboxRoutes = require('./routes/inbox');
+const paymentRoutes = require('./routes/payment'); // <--- ✅ اضافه شد (مهم)
 
-// --- ROUTES ---
-// 1. روت احراز هویت کاربر (پیامک/لاگین) - این خط جا افتاده بود 👇
-app.use('/api/auth', require('./routes/userAuth'));
+// --- API ENDPOINTS ---
+app.use('/api/auth', userAuthRoutes);
+app.use('/auth', instagramAuthRoutes);
+app.use('/accounts', accountRoutes);
+app.use('/api/triggers', triggerRoutes);
+app.use('/api/flows', flowRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/inbox', inboxRoutes);
+app.use('/api/payment', paymentRoutes); // <--- ✅ اضافه شد (مهم)
 
-// 2. سایر روت‌ها
-app.use('/auth', require('./routes/auth')); // اینستاگرام OAuth
-app.use('/accounts', require('./routes/accounts.js'));
-app.use('/api/triggers', require('./routes/triggers'));
-app.use('/api/analytics', require('./routes/analytics'));
-app.use('/api/flows', require('./routes/flows'));
-app.use('/api/inbox', require('./routes/inbox'));
-
-// مدیریت اتصال کلاینت‌ها به سوکت
-io.on('connection', (socket) => {
-  console.log('🔌 Client Connected to Socket:', socket.id);
-
-  socket.on('join_room', (ig_accountId) => {
-    socket.join(ig_accountId);
-    console.log(`Socket ${socket.id} joined room: ${ig_accountId}`);
-  });
-});
-
-// Webhook Verification
-app.get('/instagram', (req, res) => {
+// --- WEBHOOK VERIFICATION ---
+app.get('/instagram', function (req, res) {
   if (
     req.query['hub.mode'] === 'subscribe' &&
     req.query['hub.verify_token'] === process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN
   ) {
-    res.send(req.query['hub.challenge']);
+    res.status(200).send(req.query['hub.challenge']);
   } else {
     res.sendStatus(400);
   }
 });
 
-// Webhook Handler
-app.post('/instagram', async (req, res) => {
+// --- WEBHOOK HANDLER ---
+app.post('/instagram', async function (req, res) {
   res.sendStatus(200);
   const body = req.body;
   if (body.object === 'instagram') {
@@ -82,11 +86,30 @@ app.post('/instagram', async (req, res) => {
         for (const event of entry.messaging)
           await processor.handleMessage(entry, event);
       }
-      // هندل کردن استندبای و کامنت‌ها در صورت نیاز
+      if (entry.standby) {
+        for (const event of entry.standby)
+          await processor.handleMessage(entry, event);
+      }
+      if (entry.changes) {
+        for (const change of entry.changes) {
+          if (change.field === 'comments')
+            await processor.handleComment(entry, change);
+        }
+      }
     }
   }
 });
 
+// --- SOCKET CONNECTION ---
+io.on('connection', (socket) => {
+  socket.on('join_room', (room) => {
+    socket.join(room);
+    console.log(`🔌 Socket ${socket.id} joined room: ${room}`);
+  });
+});
+
+app.get('/', (req, res) => res.send('Server is Running 🚀'));
+
 server.listen(app.get('port'), () => {
-  console.log(`🚀 Server & Socket running on port ${app.get('port')}`);
+  console.log(`🚀 Server listening on port ${app.get('port')}`);
 });
