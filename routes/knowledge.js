@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const pdfParse = require('pdf-parse');
+// const pdfParse = require('pdf-parse'); // <--- این خط حذف یا کامنت شد تا خطا ندهد
 const fs = require('fs');
 const azureService = require('../services/azureService');
 const IGConnections = require('../models/IG-Connections');
@@ -10,7 +10,7 @@ const authMiddleware = require('../middleware/auth');
 // تنظیمات آپلود موقت
 const upload = multer({ dest: 'uploads/' });
 
-// 1. آپلود فایل (PDF/TXT)
+// 1. آپلود فایل (TXT only for now)
 router.post(
   '/upload',
   authMiddleware,
@@ -23,7 +23,7 @@ router.post(
       if (!file || !ig_accountId)
         return res.status(400).json({ error: 'File and Account ID required' });
 
-      // چک کردن مالکیت اکانت (امنیت)
+      // چک کردن مالکیت اکانت
       const account = await IGConnections.findOne({
         ig_userId: ig_accountId,
         user_id: req.user.id,
@@ -32,25 +32,31 @@ router.post(
 
       let textContent = '';
 
-      // استخراج متن
+      // --- اصلاحیه: غیرفعال کردن موقت PDF ---
       if (file.mimetype === 'application/pdf') {
-        const dataBuffer = fs.readFileSync(file.path);
-        const data = await pdfParse(dataBuffer);
-        textContent = data.text;
+        // const dataBuffer = fs.readFileSync(file.path);
+        // const data = await pdfParse(dataBuffer);
+        // textContent = data.text;
+        fs.unlinkSync(file.path); // حذف فایل آپلود شده
+        return res
+          .status(400)
+          .json({
+            error:
+              'آپلود PDF موقتاً غیرفعال است. لطفاً از فایل TXT استفاده کنید.',
+          });
       } else if (file.mimetype === 'text/plain') {
         textContent = fs.readFileSync(file.path, 'utf8');
       } else {
+        fs.unlinkSync(file.path);
         return res
           .status(400)
-          .json({ error: 'Unsupported file type. Use PDF or TXT.' });
+          .json({ error: 'Unsupported file type. Use TXT.' });
       }
 
       // تمیزکاری فایل موقت
-      fs.unlinkSync(file.path);
+      if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
 
       // ارسال به آژور
-      // اینجا کل متن را یکجا میفرستیم. در نسخه پرو باید Chunk شود.
-      // فعلا برای MVP فرض میکنیم فایل‌ها کوچک هستند.
       const success = await azureService.addDocument(
         ig_accountId,
         file.originalname,
@@ -63,6 +69,9 @@ router.post(
         res.status(500).json({ error: 'Indexing failed.' });
       }
     } catch (e) {
+      // حذف فایل در صورت ارور
+      if (req.file && fs.existsSync(req.file.path))
+        fs.unlinkSync(req.file.path);
       res.status(500).json({ error: e.message });
     }
   }
@@ -73,7 +82,6 @@ router.post('/test-chat', authMiddleware, async (req, res) => {
   try {
     const { ig_accountId, query, systemPrompt } = req.body;
 
-    // چک مالکیت
     const account = await IGConnections.findOne({
       ig_userId: ig_accountId,
       user_id: req.user.id,

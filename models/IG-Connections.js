@@ -1,40 +1,40 @@
 const mongoose = require('mongoose');
 
 const IGConnectionsSchema = new mongoose.Schema({
-  // *** تغییر مهم: اتصال به مدل User ***
+  // ... فیلدهای قبلی ...
   user_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
-    index: true,
   },
-
   ig_userId: { type: String, required: true, unique: true },
   username: String,
   account_name: String,
   profile_picture_url: String,
   access_token: { type: String, required: true },
 
-  // تنظیمات اختصاصی هر اکانت
-  isActive: { type: Boolean, default: true },
+  // *** تنظیمات ربات (آپدیت شده) ***
   botConfig: {
-    isActive: { type: Boolean, default: true }, // سوییچ اصلی
-    responseDelay: { type: Number, default: 0 }, // تاخیر به ثانیه
-    workingHours: { type: Boolean, default: false }, // آیا ساعات کاری فعال باشد؟
-    // میتوانید ساعات شروع و پایان را هم بعدا اضافه کنید
-  },
-  aiConfig: {
-    enabled: { type: Boolean, default: false }, // آیا AI فعال است؟
-    systemPrompt: {
+    isActive: { type: Boolean, default: true },
+    responseDelay: { type: Number, default: 0 },
+
+    // --- تنظیمات جدید کامنت ---
+    publicReplyText: { type: String, default: 'پاسخ را دایرکت کردم ✅' }, // متنی که زیر کامنت می‌نویسد
+    checkFollow: { type: Boolean, default: false }, // آیا فالو را چک کند؟
+    followWarning: {
       type: String,
-      default: 'You are a helpful assistant for this business.',
-    }, // دستورالعمل شخصیت
-    temperature: { type: Number, default: 0.7 }, // میزان خلاقیت
+      default: 'لطفاً ابتدا پیج را فالو کنید تا بتوانم پاسخ را بفرستم 🙏',
+    }, // پیام اگر فالو نداشت
+  },
+
+  aiConfig: {
+    enabled: { type: Boolean, default: false },
+    systemPrompt: { type: String, default: 'You are a helpful assistant.' },
+    temperature: { type: Number, default: 0.7 },
   },
 
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now },
 });
 
-// app_userId قدیمی را حذف کردیم و user_id گذاشتیم
 module.exports = mongoose.model('IGConnections', IGConnectionsSchema);

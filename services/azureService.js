@@ -1,6 +1,10 @@
 const { AzureOpenAI } = require('openai');
 const { AzureKeyCredential } = require('@azure/core-auth');
 const { SearchIndexClient, SearchClient } = require('@azure/search-documents');
+const { v4: uuidv4 } = require('uuid'); // <--- استفاده از uuid به جای crypto
+
+// --- لاگ تست برای اطمینان از آپدیت شدن فایل در آژور ---
+console.log('🔵 AZURE SERVICE LOADED v2 (UUID Fixed)');
 
 // --- CONFIGURATION ---
 const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
@@ -17,12 +21,11 @@ if (!endpoint || !apiKey || !searchEndpoint || !searchKey) {
   console.error('❌ MISSING AZURE CONFIG in .env');
 }
 
-// 1. ساخت کلاینت OpenAI (اصلاح شده: حذف deployment از اینجا)
+// 1. ساخت کلاینت OpenAI
 const openai = new AzureOpenAI({
   endpoint,
   apiKey,
   apiVersion,
-  // deployment: chatDeployment <--- ❌ این خط حذف شد تا روی همه متدها قفل نشود
 });
 
 // 2. ساخت کلاینت‌های جستجو
@@ -37,9 +40,6 @@ const searchClient = new SearchClient(
 );
 
 const azureService = {
-  /**
-   * اطمینان از وجود ایندکس در آژور سرچ
-   */
   ensureIndexExists: async () => {
     try {
       await searchIndexClient.getIndex(indexName);
@@ -77,12 +77,8 @@ const azureService = {
     }
   },
 
-  /**
-   * تبدیل متن به وکتور (Embedding)
-   */
   getEmbedding: async (text) => {
     try {
-      // اینجا دقیقاً به مدل امبدینگ اشاره می‌کنیم
       const response = await openai.embeddings.create({
         input: text,
         model: embeddingDeployment,
@@ -94,21 +90,13 @@ const azureService = {
     }
   },
 
-  /**
-   * افزودن سند به پایگاه دانش
-   */
   addDocument: async (igAccountId, title, content) => {
     try {
       await azureService.ensureIndexExists();
-
       const vector = await azureService.getEmbedding(content);
 
-      // ساخت شناسه یکتا و امن برای آژور
-      const docId = Buffer.from(`${igAccountId}-${Date.now()}`)
-        .toString('base64')
-        .replace(/=/g, '')
-        .replace(/\//g, '_')
-        .replace(/\+/g, '-');
+      // استفاده از uuid برای ساخت شناسه امن
+      const docId = uuidv4();
 
       const documents = [
         {
@@ -129,19 +117,14 @@ const azureService = {
     }
   },
 
-  /**
-   * جستجو و پاسخ هوشمند (RAG)
-   */
   askAI: async (
     igAccountId,
     userQuery,
     systemInstruction = 'You are a helpful assistant.'
   ) => {
     try {
-      // الف: وکتور کردن سوال
       const queryVector = await azureService.getEmbedding(userQuery);
 
-      // ب: جستجو در آژور سرچ
       const searchResults = await searchClient.search(userQuery, {
         vectorQueries: [
           {
@@ -155,17 +138,13 @@ const azureService = {
         select: ['content'],
       });
 
-      // ج: ساخت کانتکست
       let context = '';
       for await (const result of searchResults.results) {
         context += result.document.content + '\n---\n';
       }
 
-      if (!context) {
-        console.log('⚠️ No context found in KB.');
-      }
+      if (!context) console.log('⚠️ No context found in KB.');
 
-      // د: ارسال به GPT (اینجا مدل چت را صدا می‌زنیم)
       const response = await openai.chat.completions.create({
         model: chatDeployment,
         messages: [
