@@ -51,7 +51,25 @@ router.post('/purchase', authMiddleware, async (req, res) => {
     const { planId } = req.body;
     const plan = await Plan.findById(planId);
     if (!plan) return res.status(404).json({ error: 'Plan not found' });
+    if (plan.price === 0) {
+      // حذف اشتراک قبلی
+      await Subscription.deleteMany({ user_id: req.user.id });
 
+      const endDate = new Date();
+      endDate.setDate(endDate.getDate() + plan.durationDays);
+
+      // ایجاد اشتراک رایگان بدون تراکنش
+      await Subscription.create({
+        user_id: req.user.id,
+        plan_id: plan._id,
+        currentLimits: plan.limits,
+        currentFeatures: plan.features,
+        endDate: endDate,
+        status: 'active',
+      });
+
+      return res.json({ success: true, message: 'Free plan activated' });
+    }
     // محاسبه مبلغ (اینجا تومان است)
     const amount = plan.price;
     const callbackUrl = `${
