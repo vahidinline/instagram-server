@@ -1,10 +1,10 @@
 const { AzureOpenAI } = require('openai');
 const { AzureKeyCredential } = require('@azure/core-auth');
 const { SearchIndexClient, SearchClient } = require('@azure/search-documents');
-const { v4: uuidv4 } = require('uuid'); // <--- استفاده از uuid به جای crypto
+const crypto = require('crypto'); // <--- این خط حیاتی است
 
-// --- لاگ تست برای اطمینان از آپدیت شدن فایل در آژور ---
-console.log('🔵 AZURE SERVICE LOADED v2 (UUID Fixed)');
+// *** لاگ جدید برای اطمینان از آپدیت شدن ***
+console.log('🟣 AZURE SERVICE v4 - CRYPTO FIXED LOADED');
 
 // --- CONFIGURATION ---
 const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
@@ -21,14 +21,12 @@ if (!endpoint || !apiKey || !searchEndpoint || !searchKey) {
   console.error('❌ MISSING AZURE CONFIG in .env');
 }
 
-// 1. ساخت کلاینت OpenAI
 const openai = new AzureOpenAI({
   endpoint,
   apiKey,
   apiVersion,
 });
 
-// 2. ساخت کلاینت‌های جستجو
 const searchIndexClient = new SearchIndexClient(
   searchEndpoint,
   new AzureKeyCredential(searchKey)
@@ -45,7 +43,6 @@ const azureService = {
       await searchIndexClient.getIndex(indexName);
     } catch (e) {
       console.log('⚠️ Index not found. Creating new index...');
-
       const indexObj = {
         name: indexName,
         fields: [
@@ -71,7 +68,6 @@ const azureService = {
           ],
         },
       };
-
       await searchIndexClient.createIndex(indexObj);
       console.log('✅ Azure Search Index Created.');
     }
@@ -95,8 +91,8 @@ const azureService = {
       await azureService.ensureIndexExists();
       const vector = await azureService.getEmbedding(content);
 
-      // استفاده از uuid برای ساخت شناسه امن
-      const docId = uuidv4();
+      // استفاده از crypto
+      const docId = crypto.randomBytes(16).toString('hex');
 
       const documents = [
         {
@@ -143,14 +139,12 @@ const azureService = {
         context += result.document.content + '\n---\n';
       }
 
-      if (!context) console.log('⚠️ No context found in KB.');
-
       const response = await openai.chat.completions.create({
         model: chatDeployment,
         messages: [
           {
             role: 'system',
-            content: `${systemInstruction}\n\nAnswer ONLY using the Context below. If answer is not in context, say "I don't know".\n\nContext:\n${context}`,
+            content: `${systemInstruction}\n\nContext:\n${context}`,
           },
           { role: 'user', content: userQuery },
         ],
