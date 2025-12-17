@@ -16,29 +16,31 @@ async function handleMessage(entry, messaging) {
   // 1. جلوگیری از لوپ
   if (messaging.message && messaging.message.is_echo) return;
 
-  // *** تعریف متغیر اصلی ***
-  const igAccountId = entry.id;
+  // *** تغییر نام متغیر به accountId برای جلوگیری از هرگونه تداخل ***
+  const accountId = entry.id;
   const senderId = messaging.sender.id;
   const text = messaging.message?.text;
 
   if (!text) return;
 
-  console.log(`📥 New Message from ${senderId}: ${text}`);
+  console.log(`[Step 1] New Message from ${senderId}: ${text}`);
 
   // 2. بررسی اشتراک
-  const quotaCheck = await subManager.checkLimit(igAccountId);
+  const quotaCheck = await subManager.checkLimit(accountId);
   if (!quotaCheck.allowed) {
     console.log(`⛔ Message Blocked: ${quotaCheck.reason}`);
     return;
   }
+  console.log('[Step 2] Gatekeeper passed');
 
   try {
     // 3. دریافت اطلاعات اکانت
-    const connection = await IGConnections.findOne({ ig_userId: igAccountId });
+    const connection = await IGConnections.findOne({ ig_userId: accountId });
     if (!connection) {
       console.error('❌ Connection not found in DB.');
       return;
     }
+    console.log('[Step 3] Connection found');
 
     const token = connection.access_token;
     const botConfig = connection.botConfig || {
@@ -54,12 +56,13 @@ async function handleMessage(entry, messaging) {
       name: '',
     };
     if (token) {
-      userInfo = await fetchUserProfile(senderId, igAccountId, token);
+      userInfo = await fetchUserProfile(senderId, accountId, token);
     }
+    console.log('[Step 4] Profile fetched');
 
     // 5. ذخیره پیام ورودی
     const incomingLog = await MessageLog.create({
-      ig_accountId: igAccountId, // نگاشت متغیر به فیلد دیتابیس
+      ig_accountId: accountId, // اتصال دقیق متغیر جدید
       sender_id: senderId,
       sender_username: userInfo.name || userInfo.username,
       sender_avatar: userInfo.profile_picture,
@@ -67,16 +70,20 @@ async function handleMessage(entry, messaging) {
       direction: 'incoming',
       status: 'received',
     });
+    console.log('[Step 5] Incoming log saved');
 
     if (global.io) {
-      global.io.to(igAccountId).emit('new_message', incomingLog);
+      global.io.to(accountId).emit('new_message', incomingLog);
     }
 
     // 6. بررسی وضعیت ربات
     if (botConfig.isActive === false) return;
 
     // 7. جستجوی تریگر
-    const trigger = await findMatchingTrigger(igAccountId, text, 'dm');
+    const trigger = await findMatchingTrigger(accountId, text, 'dm');
+    console.log(
+      `[Step 6] Trigger search done. Found: ${trigger ? 'Yes' : 'No'}`
+    );
 
     if (trigger && trigger.flow_id) {
       console.log(`💡 Trigger Match: [${trigger.keywords.join(', ')}]`);
@@ -90,13 +97,13 @@ async function handleMessage(entry, messaging) {
         }
 
         for (const msg of flow.messages) {
-          const sent = await sendReply(igAccountId, senderId, msg, token);
+          const sent = await sendReply(accountId, senderId, msg, token);
 
           if (sent) {
             await subManager.incrementUsage(quotaCheck.subscription._id);
 
             const replyLog = await MessageLog.create({
-              ig_accountId: igAccountId,
+              ig_accountId: accountId,
               sender_id: senderId,
               sender_username: userInfo.name || userInfo.username,
               sender_avatar: userInfo.profile_picture,
@@ -107,7 +114,7 @@ async function handleMessage(entry, messaging) {
             });
 
             if (global.io)
-              global.io.to(igAccountId).emit('new_message', replyLog);
+              global.io.to(accountId).emit('new_message', replyLog);
           }
         }
         await Flows.findByIdAndUpdate(trigger.flow_id, {
@@ -121,16 +128,16 @@ async function handleMessage(entry, messaging) {
     else if (aiConfig.enabled) {
       console.log('🤖 Asking AI...');
 
-      // استفاده از متغیر صحیح igAccountId
+      // استفاده از accountId
       const aiResponse = await azureService.askAI(
-        igAccountId,
+        accountId,
         text,
         aiConfig.systemPrompt || 'You are a helpful assistant.'
       );
 
       if (aiResponse) {
         const sent = await sendReply(
-          igAccountId,
+          accountId,
           senderId,
           { content: aiResponse },
           token
@@ -140,7 +147,7 @@ async function handleMessage(entry, messaging) {
           await subManager.incrementUsage(quotaCheck.subscription._id);
 
           const replyLog = await MessageLog.create({
-            ig_accountId: igAccountId,
+            ig_accountId: accountId,
             sender_id: senderId,
             sender_username: userInfo.name || userInfo.username,
             sender_avatar: userInfo.profile_picture,
@@ -149,8 +156,7 @@ async function handleMessage(entry, messaging) {
             status: 'replied_ai',
           });
 
-          if (global.io)
-            global.io.to(igAccountId).emit('new_message', replyLog);
+          if (global.io) global.io.to(accountId).emit('new_message', replyLog);
 
           incomingLog.status = 'processed_ai';
           await incomingLog.save();
@@ -159,6 +165,7 @@ async function handleMessage(entry, messaging) {
     }
   } catch (error) {
     console.error('❌ Error in handleMessage:', error.message);
+    console.error(error.stack); // چاپ استک برای دیدن خط دقیق
   }
 }
 
@@ -193,10 +200,10 @@ async function fetchUserProfile(senderId, myIgId, token) {
   }
 }
 
-async function findMatchingTrigger(igAccountId, text, type) {
+async function findMatchingTrigger(accountId, text, type) {
   if (!text) return null;
   const triggers = await Triggers.find({
-    ig_accountId,
+    ig_accountId: accountId,
     is_active: true,
     type: { $in: [type, 'both'] },
   });
@@ -249,7 +256,7 @@ async function sendReply(myId, recipientId, messageData, token) {
 }
 
 async function handleComment(entry, change) {
-  const igAccountId = entry.id;
+  const accountId = entry.id; // تغییر نام
   const comment = change.value;
   const text = comment.text;
   const commentId = comment.id;
@@ -258,20 +265,20 @@ async function handleComment(entry, change) {
 
   if (!text || !senderId) return;
 
-  const connection = await IGConnections.findOne({ ig_userId: igAccountId });
+  const connection = await IGConnections.findOne({ ig_userId: accountId });
   if (!connection) return;
 
   if (senderUsername === connection.username) return;
 
   console.log(`💬 Comment from @${senderUsername}: ${text}`);
 
-  const quotaCheck = await subManager.checkLimit(igAccountId);
+  const quotaCheck = await subManager.checkLimit(accountId);
   if (!quotaCheck.allowed) return;
 
   const token = connection.access_token;
   const botConfig = connection.botConfig || {};
 
-  const trigger = await findMatchingTrigger(igAccountId, text, 'comment');
+  const trigger = await findMatchingTrigger(accountId, text, 'comment');
 
   if (trigger && trigger.flow_id) {
     const flow = await Flows.findById(trigger.flow_id);
@@ -320,7 +327,7 @@ async function handleComment(entry, change) {
         await subManager.incrementUsage(quotaCheck.subscription._id);
 
         await MessageLog.create({
-          ig_accountId: igAccountId,
+          ig_accountId: accountId, // تغییر نام
           sender_id: senderId,
           sender_username: senderUsername,
           content: messageToSend,
