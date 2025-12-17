@@ -1,29 +1,26 @@
 const mongoose = require('mongoose');
 
 const IGConnectionsSchema = new mongoose.Schema({
-  app_userId: {
-    type: String,
+  // *** تغییر مهم: اتصال به مدل User ***
+  user_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
     required: true,
-    index: true, // ایندکس باشد اما unique نباشد
-    // unique: true  <--- این خط نباید باشد!
+    index: true,
   },
-  ig_userId: {
-    type: String,
-    required: true,
-    unique: true, // اکانت اینستاگرام باید یکتا باشد
-  },
+
+  ig_userId: { type: String, required: true, unique: true },
   username: String,
   account_name: String,
   profile_picture_url: String,
   access_token: { type: String, required: true },
-  token_expires_at: Date,
-  account_status: {
-    type: String,
-    enum: ['active', 'inactive', 'suspended'],
-    default: 'active',
-  },
+
+  // تنظیمات اختصاصی هر اکانت
+  isActive: { type: Boolean, default: true },
+
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now },
 });
 
+// app_userId قدیمی را حذف کردیم و user_id گذاشتیم
 module.exports = mongoose.model('IGConnections', IGConnectionsSchema);

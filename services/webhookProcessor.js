@@ -4,14 +4,14 @@ const Triggers = require('../models/Triggers');
 const Flows = require('../models/Flows');
 const MessageLog = require('../models/MessageLogs');
 
-// نسخه API (تست شده و سالم)
+// نسخه پایدار API
 const GRAPH_URL = 'https://graph.instagram.com/v22.0';
 
 /**
  * پردازش پیام دایرکت (DM)
  */
 async function handleMessage(entry, messaging) {
-  // 1. جلوگیری از لوپ (پیام‌های اکو که خودمان فرستادیم)
+  // 1. جلوگیری از لوپ (پیام‌هایی که خودمان یا ادمین فرستاده)
   if (messaging.message && messaging.message.is_echo) {
     return;
   }
@@ -25,7 +25,7 @@ async function handleMessage(entry, messaging) {
 
   console.log(`📥 New Message from ${senderId}: ${text}`);
 
-  // 2. ذخیره پیام ورودی در دیتابیس (Log Incoming)
+  // 2. ذخیره پیام ورودی در دیتابیس
   const incomingLog = await MessageLog.create({
     ig_accountId: igAccountId,
     sender_id: senderId,
@@ -33,6 +33,11 @@ async function handleMessage(entry, messaging) {
     direction: 'incoming',
     status: 'received',
   });
+
+  // *** SOCKET: ارسال پیام ورودی به فرانت‌‌اند (برای Live Inbox) ***
+  if (global.io) {
+    global.io.to(igAccountId).emit('new_message', incomingLog);
+  }
 
   // 3. جستجوی تریگر
   const trigger = await findMatchingTrigger(igAccountId, text, 'dm');
@@ -48,7 +53,7 @@ async function handleMessage(entry, messaging) {
         const token = await getAccessToken(igAccountId);
 
         if (token) {
-          // ارسال تمام پیام‌های موجود در Flow (شاید چند تا باشه)
+          // ارسال تمام پیام‌های موجود در Flow
           for (const msg of flow.messages) {
             const sent = await sendReply(
               igAccountId,
@@ -57,9 +62,9 @@ async function handleMessage(entry, messaging) {
               token
             );
 
-            // 4. ذخیره پیام خروجی (Log Outgoing)
+            // 4. ذخیره پیام خروجی (پاسخ ربات)
             if (sent) {
-              await MessageLog.create({
+              const replyLog = await MessageLog.create({
                 ig_accountId: igAccountId,
                 sender_id: senderId,
                 content: msg.content,
@@ -67,6 +72,11 @@ async function handleMessage(entry, messaging) {
                 status: 'replied',
                 triggered_by: trigger._id,
               });
+
+              // *** SOCKET: ارسال پاسخ ربات به فرانت‌‌اند ***
+              if (global.io) {
+                global.io.to(igAccountId).emit('new_message', replyLog);
+              }
             }
           }
 
@@ -94,7 +104,6 @@ async function handleMessage(entry, messaging) {
 async function findMatchingTrigger(igAccountId, text, type) {
   if (!text) return null;
 
-  // دریافت همه تریگرهای فعال
   const triggers = await Triggers.find({
     ig_accountId: igAccountId,
     is_active: true,
@@ -104,23 +113,20 @@ async function findMatchingTrigger(igAccountId, text, type) {
   const lowerText = text.toLowerCase().trim();
 
   for (const trigger of triggers) {
-    // اگر keywords تعریف نشده بود، رد کن
     if (!trigger.keywords || trigger.keywords.length === 0) continue;
 
-    // بررسی تمام کلمات کلیدی داخل آرایه
     for (const keyword of trigger.keywords) {
-      // حالت ۱: تطابق دقیق (Exact Match)
+      // حالت ۱: تطابق دقیق
       if (trigger.match_type === 'exact') {
-        if (lowerText === keyword) {
-          return trigger;
-        }
+        if (lowerText === keyword) return trigger;
       }
-
-      // حالت ۲: شامل بودن (Contains)
+      // حالت ۲: شامل بودن
       else if (trigger.match_type === 'contains') {
-        if (lowerText.includes(keyword)) {
-          return trigger;
-        }
+        if (lowerText.includes(keyword)) return trigger;
+      }
+      // حالت ۳: شروع با (اختیاری)
+      else if (trigger.match_type === 'starts_with') {
+        if (lowerText.startsWith(keyword)) return trigger;
       }
     }
   }
@@ -129,7 +135,7 @@ async function findMatchingTrigger(igAccountId, text, type) {
 }
 
 /**
- * دریافت توکن دسترسی
+ * دریافت توکن دسترسی از دیتابیس
  */
 async function getAccessToken(igAccountId) {
   const conn = await IGConnections.findOne({ ig_userId: igAccountId });
@@ -159,12 +165,11 @@ async function sendReply(myId, recipientId, text, token) {
 }
 
 /**
- * پردازش کامنت (Placeholder)
+ * پردازش کامنت (می‌توانید بعداً لاگیک فلو را اینجا هم اضافه کنید)
  */
 async function handleComment(entry, change) {
-  // لاجیک مشابه برای کامنت‌ها در اینجا پیاده می‌شود
-  // (با استفاده از match_type='comment')
-  console.log('💬 Comment event received (logic to be implemented)');
+  console.log('💬 Comment received (Ready for logic implementation)');
+  // اینجا هم می‌توانید مثل دایرکت، تریگرها را چک کنید و پاسخ دهید
 }
 
 module.exports = { handleMessage, handleComment };
