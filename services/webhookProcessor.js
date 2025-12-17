@@ -16,7 +16,7 @@ async function handleMessage(entry, messaging) {
   // 1. جلوگیری از لوپ
   if (messaging.message && messaging.message.is_echo) return;
 
-  // *** بازگشت به نام استاندارد یکدست ***
+  // *** تعریف متغیر اصلی ***
   const igAccountId = entry.id;
   const senderId = messaging.sender.id;
   const text = messaging.message?.text;
@@ -59,7 +59,7 @@ async function handleMessage(entry, messaging) {
 
     // 5. ذخیره پیام ورودی
     const incomingLog = await MessageLog.create({
-      ig_accountId: igAccountId,
+      ig_accountId: igAccountId, // نگاشت متغیر به فیلد دیتابیس
       sender_id: senderId,
       sender_username: userInfo.name || userInfo.username,
       sender_avatar: userInfo.profile_picture,
@@ -121,8 +121,9 @@ async function handleMessage(entry, messaging) {
     else if (aiConfig.enabled) {
       console.log('🤖 Asking AI...');
 
+      // استفاده از متغیر صحیح igAccountId
       const aiResponse = await azureService.askAI(
-        igAccountId, // استفاده از متغیر صحیح
+        igAccountId,
         text,
         aiConfig.systemPrompt || 'You are a helpful assistant.'
       );
@@ -317,6 +318,7 @@ async function handleComment(entry, change) {
 
         console.log('✅ Private Reply Sent.');
         await subManager.incrementUsage(quotaCheck.subscription._id);
+
         await MessageLog.create({
           ig_accountId: igAccountId,
           sender_id: senderId,
