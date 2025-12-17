@@ -16,7 +16,7 @@ async function handleMessage(entry, messaging) {
   // 1. جلوگیری از لوپ
   if (messaging.message && messaging.message.is_echo) return;
 
-  // *** برگشت به نام استاندارد igAccountId ***
+  // *** بازگشت به نام استاندارد یکدست ***
   const igAccountId = entry.id;
   const senderId = messaging.sender.id;
   const text = messaging.message?.text;
@@ -25,7 +25,7 @@ async function handleMessage(entry, messaging) {
 
   console.log(`📥 New Message from ${senderId}: ${text}`);
 
-  // 2. بررسی اشتراک (Gatekeeper)
+  // 2. بررسی اشتراک
   const quotaCheck = await subManager.checkLimit(igAccountId);
   if (!quotaCheck.allowed) {
     console.log(`⛔ Message Blocked: ${quotaCheck.reason}`);
@@ -110,22 +110,19 @@ async function handleMessage(entry, messaging) {
               global.io.to(igAccountId).emit('new_message', replyLog);
           }
         }
-        // افزایش آمار استفاده از فلو
         await Flows.findByIdAndUpdate(trigger.flow_id, {
           $inc: { usage_count: 1 },
         });
-
         incomingLog.status = 'processed';
         await incomingLog.save();
       }
     }
-    // 8. هوش مصنوعی (اگر تریگر نبود)
+    // 8. هوش مصنوعی (AI)
     else if (aiConfig.enabled) {
       console.log('🤖 Asking AI...');
 
-      // *** اینجا قبلاً باگ داشت که حل شد (استفاده از igAccountId) ***
       const aiResponse = await azureService.askAI(
-        igAccountId,
+        igAccountId, // استفاده از متغیر صحیح
         text,
         aiConfig.systemPrompt || 'You are a helpful assistant.'
       );
@@ -158,107 +155,9 @@ async function handleMessage(entry, messaging) {
           await incomingLog.save();
         }
       }
-    } else {
-      console.log('🤖 AI is disabled. No reply sent.');
     }
   } catch (error) {
     console.error('❌ Error in handleMessage:', error.message);
-    console.error(error); // چاپ لاگ کامل برای دیباگ
-  }
-}
-
-/**
- * 💬 پردازش کامنت
- */
-async function handleComment(entry, change) {
-  const igAccountId = entry.id; // اینجا هم درست شد
-  const comment = change.value;
-  const text = comment.text;
-  const commentId = comment.id;
-  const senderId = comment.from?.id;
-  const senderUsername = comment.from?.username;
-
-  if (!text || !senderId) return;
-
-  const connection = await IGConnections.findOne({ ig_userId: igAccountId });
-  if (!connection) return;
-
-  if (senderUsername === connection.username) return;
-
-  console.log(`💬 Comment from @${senderUsername}: ${text}`);
-
-  const quotaCheck = await subManager.checkLimit(igAccountId);
-  if (!quotaCheck.allowed) return;
-
-  const token = connection.access_token;
-  const botConfig = connection.botConfig || {};
-
-  const trigger = await findMatchingTrigger(igAccountId, text, 'comment');
-
-  if (trigger && trigger.flow_id) {
-    const flow = await Flows.findById(trigger.flow_id);
-
-    if (flow) {
-      // ریپلای عمومی
-      if (botConfig.publicReplyText) {
-        try {
-          await axios.post(
-            `${GRAPH_URL}/${commentId}/replies`,
-            {
-              message: botConfig.publicReplyText,
-            },
-            { params: { access_token: token } }
-          );
-        } catch (e) {
-          console.error('Public Reply Error');
-        }
-      }
-
-      // متن دایرکت
-      let messageToSend = flow.messages[0].content;
-
-      if (botConfig.checkFollow) {
-        messageToSend = `${
-          botConfig.followWarning || 'لطفا پیج را فالو کنید'
-        }\n\n👇👇👇\n${messageToSend}`;
-      }
-
-      if (flow.messages[0].buttons && flow.messages[0].buttons.length > 0) {
-        messageToSend +=
-          '\n\n🔗 لینک‌ها:\n' +
-          flow.messages[0].buttons
-            .map((b) => `${b.title}: ${b.url}`)
-            .join('\n');
-      }
-
-      // ارسال دایرکت
-      try {
-        await axios.post(
-          `${GRAPH_URL}/me/messages`,
-          {
-            recipient: { comment_id: commentId },
-            message: { text: messageToSend },
-          },
-          { params: { access_token: token } }
-        );
-
-        console.log('✅ Private Reply Sent.');
-
-        await subManager.incrementUsage(quotaCheck.subscription._id);
-
-        await MessageLog.create({
-          ig_accountId: igAccountId,
-          sender_id: senderId,
-          sender_username: senderUsername,
-          content: messageToSend,
-          direction: 'outgoing',
-          status: 'replied_comment',
-          triggered_by: trigger._id,
-        });
-      } catch (e) {
-        console.error('❌ Private Reply Error:', e.response?.data || e.message);
-      }
-    }
   }
 }
 
@@ -345,6 +244,92 @@ async function sendReply(myId, recipientId, messageData, token) {
   } catch (e) {
     console.error('❌ Send Error:', e.response?.data || e.message);
     return false;
+  }
+}
+
+async function handleComment(entry, change) {
+  const igAccountId = entry.id;
+  const comment = change.value;
+  const text = comment.text;
+  const commentId = comment.id;
+  const senderId = comment.from?.id;
+  const senderUsername = comment.from?.username;
+
+  if (!text || !senderId) return;
+
+  const connection = await IGConnections.findOne({ ig_userId: igAccountId });
+  if (!connection) return;
+
+  if (senderUsername === connection.username) return;
+
+  console.log(`💬 Comment from @${senderUsername}: ${text}`);
+
+  const quotaCheck = await subManager.checkLimit(igAccountId);
+  if (!quotaCheck.allowed) return;
+
+  const token = connection.access_token;
+  const botConfig = connection.botConfig || {};
+
+  const trigger = await findMatchingTrigger(igAccountId, text, 'comment');
+
+  if (trigger && trigger.flow_id) {
+    const flow = await Flows.findById(trigger.flow_id);
+
+    if (flow) {
+      if (botConfig.publicReplyText) {
+        try {
+          await axios.post(
+            `${GRAPH_URL}/${commentId}/replies`,
+            {
+              message: botConfig.publicReplyText,
+            },
+            { params: { access_token: token } }
+          );
+        } catch (e) {
+          console.error('Public Reply Error');
+        }
+      }
+
+      let messageToSend = flow.messages[0].content;
+      if (botConfig.checkFollow) {
+        messageToSend = `${
+          botConfig.followWarning || 'لطفا پیج را فالو کنید'
+        }\n\n👇👇👇\n${messageToSend}`;
+      }
+
+      if (flow.messages[0].buttons && flow.messages[0].buttons.length > 0) {
+        messageToSend +=
+          '\n\n🔗 لینک‌ها:\n' +
+          flow.messages[0].buttons
+            .map((b) => `${b.title}: ${b.url}`)
+            .join('\n');
+      }
+
+      try {
+        await axios.post(
+          `${GRAPH_URL}/me/messages`,
+          {
+            recipient: { comment_id: commentId },
+            message: { text: messageToSend },
+          },
+          { params: { access_token: token } }
+        );
+
+        console.log('✅ Private Reply Sent.');
+        await subManager.incrementUsage(quotaCheck.subscription._id);
+        await MessageLog.create({
+          ig_accountId: igAccountId,
+          sender_id: senderId,
+          sender_username: senderUsername,
+          content: messageToSend,
+          direction: 'outgoing',
+          status: 'replied_comment',
+          triggered_by: trigger._id,
+        });
+      } catch (e) {
+        console.error('❌ Private Reply Error:', e.response?.data || e.message);
+      }
+    }
   }
 }
 

@@ -4,7 +4,7 @@ const { SearchIndexClient, SearchClient } = require('@azure/search-documents');
 const crypto = require('crypto'); // <--- این خط حیاتی است
 
 // *** لاگ جدید برای اطمینان از آپدیت شدن ***
-console.log('🟣 AZURE SERVICE v4 - CRYPTO FIXED LOADED');
+console.log('🟣 AZURE SERVICE v5 - CRYPTO FIXED LOADED');
 
 // --- CONFIGURATION ---
 const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
