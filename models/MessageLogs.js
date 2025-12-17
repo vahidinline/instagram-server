@@ -12,7 +12,15 @@ const MessageLogSchema = new mongoose.Schema({
   // محتوا
   message_type: {
     type: String,
-    enum: ['text', 'image', 'story_reply', 'unknown'],
+    enum: [
+      'text',
+      'image',
+      'story_reply',
+      'unknown',
+      'replied_ai',
+      'processed_ai',
+      'replied_comment',
+    ],
     default: 'text',
   },
   content: { type: String },
