@@ -72,4 +72,34 @@ router.patch('/:id/toggle', async (req, res) => {
   }
 });
 
+// ویرایش تریگر (PUT)
+router.put('/:id', async (req, res) => {
+  try {
+    const { keywords, flow_id, match_type, type } = req.body;
+
+    // تبدیل کلمات کلیدی (اگر استرینگ بود به آرایه، اگر آرایه بود خودش)
+    let keywordsArray = keywords;
+    if (typeof keywords === 'string') {
+      keywordsArray = keywords
+        .split(',')
+        .map((k) => k.trim())
+        .filter((k) => k);
+    }
+
+    const updatedTrigger = await Triggers.findByIdAndUpdate(
+      req.params.id,
+      {
+        keywords: keywordsArray,
+        flow_id,
+        match_type,
+        type,
+      },
+      { new: true }
+    );
+    res.json(updatedTrigger);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;

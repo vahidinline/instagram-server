@@ -2,22 +2,17 @@ const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 const IGConnections = require('../models/IG-Connections');
-const authMiddleware = require('../middleware/auth'); // میدل‌ویر امنیتی
+const authMiddleware = require('../middleware/auth');
 
-// 1. ساخت لینک اتصال (فقط برای کاربر لاگین شده)
+// 1. ساخت لینک اتصال
 router.get('/connect-url', authMiddleware, (req, res) => {
-  // ما آی‌دی کاربر را از توکن JWT استخراج می‌کنیم (req.user.id)
   const systemUserId = req.user.id;
-
   const scopes = [
     'instagram_business_basic',
     'instagram_business_manage_messages',
     'instagram_business_manage_comments',
   ].join(',');
 
-  // *** نکته امنیتی و حیاتی ***
-  // ما آی‌دی کاربر سیستم را در پارامتر state می‌گذاریم
-  // تا وقتی از اینستاگرام برگشت، بدانیم این اکانت مال کیست
   const stateData = JSON.stringify({ systemUserId: systemUserId });
   const state = encodeURIComponent(stateData);
 
@@ -26,7 +21,7 @@ router.get('/connect-url', authMiddleware, (req, res) => {
   res.json({ url });
 });
 
-// 2. کال‌بک و ذخیره اتصال
+// 2. کال‌بک
 router.get('/callback', async (req, res) => {
   const { code, state } = req.query;
   const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -35,15 +30,12 @@ router.get('/callback', async (req, res) => {
     return res.redirect(`${FRONTEND_URL}/accounts?status=error&msg=NoCode`);
 
   try {
-    // بازگشایی بسته state برای پیدا کردن صاحب اکانت
     const decodedState = JSON.parse(decodeURIComponent(state));
     const systemUserId = decodedState.systemUserId;
 
-    if (!systemUserId) {
-      throw new Error('User ID missing in state');
-    }
+    if (!systemUserId) throw new Error('User ID missing');
 
-    // A. دریافت توکن کوتاه مدت
+    // A. توکن کوتاه
     const formData = new URLSearchParams();
     formData.append('client_id', process.env.INSTAGRAM_CLIENT_ID);
     formData.append('client_secret', process.env.INSTAGRAM_CLIENT_SECRET);
@@ -57,7 +49,7 @@ router.get('/callback', async (req, res) => {
     );
     const shortToken = shortResp.data.access_token;
 
-    // B. دریافت توکن بلند مدت
+    // B. توکن بلند
     const longResp = await axios.get(
       'https://graph.instagram.com/access_token',
       {
@@ -71,7 +63,7 @@ router.get('/callback', async (req, res) => {
     const longToken = longResp.data.access_token;
     const expiresIn = longResp.data.expires_in;
 
-    // C. دریافت پروفایل اینستاگرام
+    // C. پروفایل
     const profileResp = await axios.get(
       `https://graph.instagram.com/v22.0/me`,
       {
@@ -82,13 +74,14 @@ router.get('/callback', async (req, res) => {
       }
     );
     const profile = profileResp.data;
+    const igUserId = profile.user_id || profile.id;
 
-    // D. ذخیره در دیتابیس (متصل به User)
+    // D. ذخیره در دیتابیس
     await IGConnections.findOneAndUpdate(
-      { ig_userId: profile.user_id || profile.id }, // شرط جستجو
+      { ig_userId: igUserId },
       {
-        user_id: systemUserId, // <--- اتصال اکانت اینستا به کاربر SaaS
-        ig_userId: profile.user_id || profile.id,
+        user_id: systemUserId,
+        ig_userId: igUserId,
         username: profile.username,
         account_name: profile.name || profile.username,
         profile_picture_url: profile.profile_picture_url,
@@ -100,11 +93,26 @@ router.get('/callback', async (req, res) => {
       { upsert: true, new: true }
     );
 
-    console.log(
-      `✅ Instagram Account @${profile.username} connected to User ID: ${systemUserId}`
-    );
+    // *** E. فعال‌سازی وب‌هوک (این بخش جدید و حیاتی است) ***
+    try {
+      await axios.post(
+        `https://graph.instagram.com/v22.0/${igUserId}/subscribed_apps`,
+        {
+          subscribed_fields: 'messages,comments',
+        },
+        {
+          params: { access_token: longToken },
+        }
+      );
+      console.log(`✅ Webhook Subscribed for @${profile.username}`);
+    } catch (subErr) {
+      console.error(
+        '❌ Webhook Subscription Failed:',
+        subErr.response?.data || subErr.message
+      );
+      // اینجا ارور را نادیده می‌گیریم تا لاگین کاربر خراب نشود، ولی در لاگ سرور ثبت می‌شود
+    }
 
-    // E. ریدایرکت به صفحه مدیریت اکانت‌ها در فرانت‌‌اند
     res.redirect(`${FRONTEND_URL}/accounts?status=success`);
   } catch (error) {
     console.error('Connect Error:', error.response?.data || error.message);

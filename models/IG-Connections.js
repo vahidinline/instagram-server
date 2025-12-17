@@ -17,6 +17,12 @@ const IGConnectionsSchema = new mongoose.Schema({
 
   // تنظیمات اختصاصی هر اکانت
   isActive: { type: Boolean, default: true },
+  botConfig: {
+    isActive: { type: Boolean, default: true }, // سوییچ اصلی
+    responseDelay: { type: Number, default: 0 }, // تاخیر به ثانیه
+    workingHours: { type: Boolean, default: false }, // آیا ساعات کاری فعال باشد؟
+    // میتوانید ساعات شروع و پایان را هم بعدا اضافه کنید
+  },
 
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now },

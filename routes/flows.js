@@ -34,4 +34,21 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// ... (کدهای قبلی)
+
+// ویرایش فلو (PUT)
+router.put('/:id', async (req, res) => {
+  try {
+    const { name, messages } = req.body;
+    const updatedFlow = await Flows.findByIdAndUpdate(
+      req.params.id,
+      { name, messages },
+      { new: true } // برگرداندن نسخه آپدیت شده
+    );
+    res.json(updatedFlow);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;

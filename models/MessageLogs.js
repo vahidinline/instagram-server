@@ -6,7 +6,8 @@ const MessageLogSchema = new mongoose.Schema({
 
   // طرف مقابل (مشتری)
   sender_id: { type: String, required: true },
-  sender_username: { type: String }, // اختیاری (بعدا میشه فچ کرد)
+  sender_username: { type: String, default: 'Instagram User' },
+  sender_avatar: { type: String, default: '' },
 
   // محتوا
   message_type: {

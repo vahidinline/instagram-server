@@ -3,23 +3,23 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const xhub = require('express-x-hub');
 const cors = require('cors');
-const http = require('http'); // <--- جدید
-const { Server } = require('socket.io'); // <--- جدید
+const http = require('http');
+const { Server } = require('socket.io');
 
 const processor = require('./services/webhookProcessor');
 
 const app = express();
-const server = http.createServer(app); // <--- ساخت سرور HTTP
+const server = http.createServer(app);
 
 // تنظیمات سوکت
 const io = new Server(server, {
   cors: {
-    origin: '*', // در پروداکشن آدرس دقیق فرانت را بگذارید
+    origin: '*', // اجازه به همه دامین‌ها
     methods: ['GET', 'POST'],
   },
 });
 
-// ذخیره io در متغیر جهانی (برای دسترسی در تمام فایل‌ها)
+// ذخیره io در متغیر جهانی
 global.io = io;
 
 app.set('port', process.env.PORT || 3004);
@@ -38,26 +38,29 @@ db.mongoose
   )
   .then(() => console.log('✅ MongoDB Connected.'));
 
-// Routes
-app.use('/auth', require('./routes/auth'));
+// --- ROUTES ---
+// 1. روت احراز هویت کاربر (پیامک/لاگین) - این خط جا افتاده بود 👇
+app.use('/api/auth', require('./routes/userAuth'));
+
+// 2. سایر روت‌ها
+app.use('/auth', require('./routes/auth')); // اینستاگرام OAuth
 app.use('/accounts', require('./routes/accounts.js'));
 app.use('/api/triggers', require('./routes/triggers'));
 app.use('/api/analytics', require('./routes/analytics'));
 app.use('/api/flows', require('./routes/flows'));
-app.use('/api/inbox', require('./routes/inbox')); // <--- روت اینباکس که قبلا ساختیم
+app.use('/api/inbox', require('./routes/inbox'));
 
 // مدیریت اتصال کلاینت‌ها به سوکت
 io.on('connection', (socket) => {
   console.log('🔌 Client Connected to Socket:', socket.id);
 
-  // کلاینت (فرانت) با ارسال آی‌دی پیج، وارد اتاق مخصوص خودش میشه
   socket.on('join_room', (ig_accountId) => {
     socket.join(ig_accountId);
     console.log(`Socket ${socket.id} joined room: ${ig_accountId}`);
   });
 });
 
-// Webhook Route
+// Webhook Verification
 app.get('/instagram', (req, res) => {
   if (
     req.query['hub.mode'] === 'subscribe' &&
@@ -69,6 +72,7 @@ app.get('/instagram', (req, res) => {
   }
 });
 
+// Webhook Handler
 app.post('/instagram', async (req, res) => {
   res.sendStatus(200);
   const body = req.body;
@@ -78,12 +82,11 @@ app.post('/instagram', async (req, res) => {
         for (const event of entry.messaging)
           await processor.handleMessage(entry, event);
       }
-      // ... بقیه هندلرها (کامنت و ...)
+      // هندل کردن استندبای و کامنت‌ها در صورت نیاز
     }
   }
 });
 
-// تغییر app.listen به server.listen (مهم)
 server.listen(app.get('port'), () => {
   console.log(`🚀 Server & Socket running on port ${app.get('port')}`);
 });

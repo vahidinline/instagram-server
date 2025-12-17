@@ -2,16 +2,25 @@ const mongoose = require('mongoose');
 
 const FlowSchema = new mongoose.Schema({
   ig_accountId: { type: String, required: true },
-  name: { type: String, required: true }, // نام فلو برای نمایش در پنل (مثلا: خوش‌آمدگویی)
+  name: { type: String, required: true },
 
-  // آرایه‌ای از پیام‌ها (فعلا متن، بعدا عکس و...)
   messages: [
     {
-      type: { type: String, enum: ['text', 'image'], default: 'text' },
-      content: { type: String, required: true },
+      type: { type: String, enum: ['text', 'image', 'card'], default: 'text' },
+      content: { type: String, required: true }, // متن اصلی
+
+      // *** اضافه شد: دکمه‌ها (فقط برای دایرکت) ***
+      buttons: [
+        {
+          title: { type: String, required: true }, // متن دکمه (مثلا: خرید)
+          url: { type: String, required: true }, // لینک سایت
+          type: { type: String, default: 'web_url' }, // فعلا فقط لینک وب
+        },
+      ],
     },
   ],
 
+  usage_count: { type: Number, default: 0 },
   created_at: { type: Date, default: Date.now },
 });
 

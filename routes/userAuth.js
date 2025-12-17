@@ -78,4 +78,21 @@ router.get('/me', authMiddleware, async (req, res) => {
   res.json(user);
 });
 
+router.put('/profile', authMiddleware, async (req, res) => {
+  try {
+    const { name, email } = req.body;
+
+    // آپدیت کردن نام و ایمیل کاربر
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { name, email },
+      { new: true, runValidators: true }
+    ).select('-password -otp -otpExpires'); // عدم ارسال اطلاعات حساس
+
+    res.json(user);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
