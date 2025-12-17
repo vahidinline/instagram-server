@@ -1,8 +1,16 @@
 /**
- * Main Server File - FINAL INTEGRATED VERSION
+ * Main Server File - FINAL PRODUCTION VERSION (Crypto Patched)
  */
 
 require('dotenv').config();
+
+// *** پچ حیاتی برای حل مشکل کتابخانه‌های هوش مصنوعی ***
+const crypto = require('crypto');
+if (!global.crypto) {
+  global.crypto = crypto;
+}
+// ****************************************************
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const xhub = require('express-x-hub');
@@ -52,7 +60,8 @@ const triggerRoutes = require('./routes/triggers');
 const flowRoutes = require('./routes/flows');
 const analyticsRoutes = require('./routes/analytics');
 const inboxRoutes = require('./routes/inbox');
-const paymentRoutes = require('./routes/payment'); // <--- ✅ اضافه شد (مهم)
+const paymentRoutes = require('./routes/payment');
+const knowledgeRoutes = require('./routes/knowledge'); // <--- احتمالا این را هم اضافه نکرده بودید (چک کنید)
 
 // --- API ENDPOINTS ---
 app.use('/api/auth', userAuthRoutes);
@@ -62,7 +71,8 @@ app.use('/api/triggers', triggerRoutes);
 app.use('/api/flows', flowRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/inbox', inboxRoutes);
-app.use('/api/payment', paymentRoutes); // <--- ✅ اضافه شد (مهم)
+app.use('/api/payment', paymentRoutes);
+app.use('/api/knowledge', knowledgeRoutes); // <--- روت نالیج
 
 // --- WEBHOOK VERIFICATION ---
 app.get('/instagram', function (req, res) {
@@ -109,7 +119,6 @@ io.on('connection', (socket) => {
 });
 
 app.get('/', (req, res) => res.send('Server is Running 🚀'));
-app.use('/api/knowledge', require('./routes/knowledge'));
 
 server.listen(app.get('port'), () => {
   console.log(`🚀 Server listening on port ${app.get('port')}`);
