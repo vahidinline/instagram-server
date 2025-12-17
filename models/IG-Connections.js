@@ -23,6 +23,14 @@ const IGConnectionsSchema = new mongoose.Schema({
     workingHours: { type: Boolean, default: false }, // آیا ساعات کاری فعال باشد؟
     // میتوانید ساعات شروع و پایان را هم بعدا اضافه کنید
   },
+  aiConfig: {
+    enabled: { type: Boolean, default: false }, // آیا AI فعال است؟
+    systemPrompt: {
+      type: String,
+      default: 'You are a helpful assistant for this business.',
+    }, // دستورالعمل شخصیت
+    temperature: { type: Number, default: 0.7 }, // میزان خلاقیت
+  },
 
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now },

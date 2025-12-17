@@ -37,7 +37,7 @@ router.get('/:igId/settings', authMiddleware, async (req, res) => {
 // 2. آپدیت تنظیمات
 router.put('/:igId/settings', authMiddleware, async (req, res) => {
   try {
-    const { isActive, responseDelay } = req.body;
+    const { isActive, responseDelay, aiConfig } = req.body;
 
     const account = await IGConnections.findOneAndUpdate(
       { ig_userId: req.params.igId, user_id: req.user.id },
@@ -45,6 +45,7 @@ router.put('/:igId/settings', authMiddleware, async (req, res) => {
         $set: {
           'botConfig.isActive': isActive,
           'botConfig.responseDelay': responseDelay,
+          aiConfig: aiConfig,
         },
       },
       { new: true }
@@ -57,8 +58,5 @@ router.put('/:igId/settings', authMiddleware, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-
-// ... (بقیه روت‌ها)
-module.exports = router;
 
 module.exports = router;
