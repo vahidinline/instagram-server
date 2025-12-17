@@ -13,28 +13,28 @@ const GRAPH_URL = 'https://graph.instagram.com/v22.0';
  * 📨 پردازش پیام دایرکت (DM)
  */
 async function handleMessage(entry, messaging) {
-  // 1. جلوگیری از لوپ (پیام‌های اکو)
+  // 1. جلوگیری از لوپ
   if (messaging.message && messaging.message.is_echo) return;
 
-  // تغییر نام متغیر به ownerId برای جلوگیری از تداخل با فیلدهای دیتابیس
-  const ownerId = entry.id; // اکانت بیزینس ما
-  const senderId = messaging.sender.id; // مشتری
+  // *** برگشت به نام استاندارد igAccountId ***
+  const igAccountId = entry.id;
+  const senderId = messaging.sender.id;
   const text = messaging.message?.text;
 
   if (!text) return;
 
   console.log(`📥 New Message from ${senderId}: ${text}`);
 
-  // 2. بررسی اشتراک و محدودیت (Gatekeeper)
-  const quotaCheck = await subManager.checkLimit(ownerId);
+  // 2. بررسی اشتراک (Gatekeeper)
+  const quotaCheck = await subManager.checkLimit(igAccountId);
   if (!quotaCheck.allowed) {
     console.log(`⛔ Message Blocked: ${quotaCheck.reason}`);
     return;
   }
 
   try {
-    // 3. دریافت اطلاعات اکانت و تنظیمات
-    const connection = await IGConnections.findOne({ ig_userId: ownerId });
+    // 3. دریافت اطلاعات اکانت
+    const connection = await IGConnections.findOne({ ig_userId: igAccountId });
     if (!connection) {
       console.error('❌ Connection not found in DB.');
       return;
@@ -47,19 +47,19 @@ async function handleMessage(entry, messaging) {
     };
     const aiConfig = connection.aiConfig || { enabled: false };
 
-    // 4. دریافت پروفایل کاربر (نام و عکس)
+    // 4. دریافت پروفایل کاربر
     let userInfo = {
       username: 'Instagram User',
       profile_picture: '',
       name: '',
     };
     if (token) {
-      userInfo = await fetchUserProfile(senderId, ownerId, token);
+      userInfo = await fetchUserProfile(senderId, igAccountId, token);
     }
 
-    // 5. ذخیره پیام ورودی در دیتابیس
+    // 5. ذخیره پیام ورودی
     const incomingLog = await MessageLog.create({
-      ig_accountId: ownerId,
+      ig_accountId: igAccountId,
       sender_id: senderId,
       sender_username: userInfo.name || userInfo.username,
       sender_avatar: userInfo.profile_picture,
@@ -68,40 +68,35 @@ async function handleMessage(entry, messaging) {
       status: 'received',
     });
 
-    // ارسال به سوکت (Live Inbox)
     if (global.io) {
-      global.io.to(ownerId).emit('new_message', incomingLog);
+      global.io.to(igAccountId).emit('new_message', incomingLog);
     }
 
-    // 6. بررسی سوییچ خاموش/روشن ربات
+    // 6. بررسی وضعیت ربات
     if (botConfig.isActive === false) return;
 
     // 7. جستجوی تریگر
-    const trigger = await findMatchingTrigger(ownerId, text, 'dm');
+    const trigger = await findMatchingTrigger(igAccountId, text, 'dm');
 
     if (trigger && trigger.flow_id) {
       console.log(`💡 Trigger Match: [${trigger.keywords.join(', ')}]`);
       const flow = await Flows.findById(trigger.flow_id);
 
       if (flow) {
-        // اعمال تاخیر
         if (botConfig.responseDelay > 0) {
           await new Promise((r) =>
             setTimeout(r, botConfig.responseDelay * 1000)
           );
         }
 
-        // ارسال پیام‌های فلو
         for (const msg of flow.messages) {
-          const sent = await sendReply(ownerId, senderId, msg, token);
+          const sent = await sendReply(igAccountId, senderId, msg, token);
 
           if (sent) {
-            // کسر اعتبار
             await subManager.incrementUsage(quotaCheck.subscription._id);
 
-            // لاگ خروجی
             const replyLog = await MessageLog.create({
-              ig_accountId: ownerId,
+              ig_accountId: igAccountId,
               sender_id: senderId,
               sender_username: userInfo.name || userInfo.username,
               sender_avatar: userInfo.profile_picture,
@@ -111,8 +106,8 @@ async function handleMessage(entry, messaging) {
               triggered_by: trigger._id,
             });
 
-            // ارسال پاسخ به سوکت
-            if (global.io) global.io.to(ownerId).emit('new_message', replyLog);
+            if (global.io)
+              global.io.to(igAccountId).emit('new_message', replyLog);
           }
         }
         // افزایش آمار استفاده از فلو
@@ -127,25 +122,27 @@ async function handleMessage(entry, messaging) {
     // 8. هوش مصنوعی (اگر تریگر نبود)
     else if (aiConfig.enabled) {
       console.log('🤖 Asking AI...');
-      // استفاده صحیح از ownerId
+
+      // *** اینجا قبلاً باگ داشت که حل شد (استفاده از igAccountId) ***
       const aiResponse = await azureService.askAI(
-        ownerId,
+        igAccountId,
         text,
         aiConfig.systemPrompt || 'You are a helpful assistant.'
       );
 
       if (aiResponse) {
         const sent = await sendReply(
-          ownerId,
+          igAccountId,
           senderId,
           { content: aiResponse },
           token
         );
+
         if (sent) {
           await subManager.incrementUsage(quotaCheck.subscription._id);
 
           const replyLog = await MessageLog.create({
-            ig_accountId: ownerId,
+            ig_accountId: igAccountId,
             sender_id: senderId,
             sender_username: userInfo.name || userInfo.username,
             sender_avatar: userInfo.profile_picture,
@@ -154,7 +151,8 @@ async function handleMessage(entry, messaging) {
             status: 'replied_ai',
           });
 
-          if (global.io) global.io.to(ownerId).emit('new_message', replyLog);
+          if (global.io)
+            global.io.to(igAccountId).emit('new_message', replyLog);
 
           incomingLog.status = 'processed_ai';
           await incomingLog.save();
@@ -165,6 +163,7 @@ async function handleMessage(entry, messaging) {
     }
   } catch (error) {
     console.error('❌ Error in handleMessage:', error.message);
+    console.error(error); // چاپ لاگ کامل برای دیباگ
   }
 }
 
@@ -172,7 +171,7 @@ async function handleMessage(entry, messaging) {
  * 💬 پردازش کامنت
  */
 async function handleComment(entry, change) {
-  const ownerId = entry.id; // تغییر نام به ownerId برای هماهنگی
+  const igAccountId = entry.id; // اینجا هم درست شد
   const comment = change.value;
   const text = comment.text;
   const commentId = comment.id;
@@ -181,30 +180,26 @@ async function handleComment(entry, change) {
 
   if (!text || !senderId) return;
 
-  // دریافت کانکشن برای تنظیمات
-  const connection = await IGConnections.findOne({ ig_userId: ownerId });
+  const connection = await IGConnections.findOne({ ig_userId: igAccountId });
   if (!connection) return;
 
-  // اگر کامنت خودِ پیج بود، نادیده بگیر
   if (senderUsername === connection.username) return;
 
   console.log(`💬 Comment from @${senderUsername}: ${text}`);
 
-  // بررسی اشتراک
-  const quotaCheck = await subManager.checkLimit(ownerId);
+  const quotaCheck = await subManager.checkLimit(igAccountId);
   if (!quotaCheck.allowed) return;
 
   const token = connection.access_token;
   const botConfig = connection.botConfig || {};
 
-  // جستجوی تریگر برای کامنت
-  const trigger = await findMatchingTrigger(ownerId, text, 'comment');
+  const trigger = await findMatchingTrigger(igAccountId, text, 'comment');
 
   if (trigger && trigger.flow_id) {
     const flow = await Flows.findById(trigger.flow_id);
 
     if (flow) {
-      // الف) ریپلای عمومی (Public Reply)
+      // ریپلای عمومی
       if (botConfig.publicReplyText) {
         try {
           await axios.post(
@@ -219,17 +214,15 @@ async function handleComment(entry, change) {
         }
       }
 
-      // ب) آماده‌سازی متن دایرکت (Private Reply)
+      // متن دایرکت
       let messageToSend = flow.messages[0].content;
 
-      // اعمال تنظیم "چک کردن فالو"
       if (botConfig.checkFollow) {
         messageToSend = `${
           botConfig.followWarning || 'لطفا پیج را فالو کنید'
         }\n\n👇👇👇\n${messageToSend}`;
       }
 
-      // اضافه کردن لینک دکمه‌ها
       if (flow.messages[0].buttons && flow.messages[0].buttons.length > 0) {
         messageToSend +=
           '\n\n🔗 لینک‌ها:\n' +
@@ -238,7 +231,7 @@ async function handleComment(entry, change) {
             .join('\n');
       }
 
-      // ج) ارسال دایرکت خصوصی
+      // ارسال دایرکت
       try {
         await axios.post(
           `${GRAPH_URL}/me/messages`,
@@ -251,12 +244,10 @@ async function handleComment(entry, change) {
 
         console.log('✅ Private Reply Sent.');
 
-        // کسر اعتبار
         await subManager.incrementUsage(quotaCheck.subscription._id);
 
-        // لاگ کردن
         await MessageLog.create({
-          ig_accountId: ownerId,
+          ig_accountId: igAccountId,
           sender_id: senderId,
           sender_username: senderUsername,
           content: messageToSend,
