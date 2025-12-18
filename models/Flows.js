@@ -19,6 +19,17 @@ const FlowSchema = new mongoose.Schema({
       ],
     },
   ],
+  messages: [
+    {
+      type: {
+        type: String,
+        enum: ['text', 'image', 'card', 'ai_response'],
+        default: 'text',
+      },
+      content: { type: String }, // اگر ai_response باشد، این فیلد می‌تواند خالی باشد یا "دستور خاص" برای AI باشد
+      // ... buttons ...
+    },
+  ],
 
   usage_count: { type: Number, default: 0 },
   created_at: { type: Date, default: Date.now },

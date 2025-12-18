@@ -41,7 +41,7 @@ mongoose
 
     // 2. اعطای اشتراک به کاربر ادمین (شماره خودت رو بذار)
     // اگر کاربر با این شماره داری، بهش اشتراک Pro میده
-    const myPhone = '09122270114';
+    const myPhone = '09197107232';
     const user = await User.findOne({ phone: myPhone });
 
     if (user) {

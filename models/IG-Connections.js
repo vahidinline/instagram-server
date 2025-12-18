@@ -29,8 +29,10 @@ const IGConnectionsSchema = new mongoose.Schema({
 
   aiConfig: {
     enabled: { type: Boolean, default: false },
+    // تغییر: به جای متن مستقیم، آی‌دی پرسونا را نگه می‌داریم
+    activePersonaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Persona' },
+    // جهت اطمینان (Fallback)، اگر پرسونا پاک شد، این متن بماند:
     systemPrompt: { type: String, default: 'You are a helpful assistant.' },
-    temperature: { type: Number, default: 0.7 },
   },
 
   created_at: { type: Date, default: Date.now },

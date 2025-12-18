@@ -1,16 +1,35 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-// const pdfParse = require('pdf-parse'); // <--- این خط حذف یا کامنت شد تا خطا ندهد
 const fs = require('fs');
 const azureService = require('../services/azureService');
 const IGConnections = require('../models/IG-Connections');
+const KnowledgeDoc = require('../models/KnowledgeDoc'); // <--- مدل جدید
 const authMiddleware = require('../middleware/auth');
 
-// تنظیمات آپلود موقت
 const upload = multer({ dest: 'uploads/' });
 
-// 1. آپلود فایل (TXT only for now)
+// 1. لیست فایل‌ها
+router.get('/', authMiddleware, async (req, res) => {
+  try {
+    const { ig_accountId } = req.query;
+    // چک مالکیت (سریع)
+    const account = await IGConnections.findOne({
+      ig_userId: ig_accountId,
+      user_id: req.user.id,
+    });
+    if (!account) return res.status(403).json({ error: 'Access denied' });
+
+    const docs = await KnowledgeDoc.find({ ig_accountId }).sort({
+      created_at: -1,
+    });
+    res.json(docs);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 2. آپلود فایل
 router.post(
   '/upload',
   authMiddleware,
@@ -21,9 +40,8 @@ router.post(
       const file = req.file;
 
       if (!file || !ig_accountId)
-        return res.status(400).json({ error: 'File and Account ID required' });
+        return res.status(400).json({ error: 'Missing data' });
 
-      // چک کردن مالکیت اکانت
       const account = await IGConnections.findOne({
         ig_userId: ig_accountId,
         user_id: req.user.id,
@@ -31,45 +49,48 @@ router.post(
       if (!account) return res.status(403).json({ error: 'Access denied' });
 
       let textContent = '';
+      let fileType = 'txt';
 
-      // --- اصلاحیه: غیرفعال کردن موقت PDF ---
-      if (file.mimetype === 'application/pdf') {
-        // const dataBuffer = fs.readFileSync(file.path);
-        // const data = await pdfParse(dataBuffer);
-        // textContent = data.text;
-        fs.unlinkSync(file.path); // حذف فایل آپلود شده
-        return res
-          .status(400)
-          .json({
-            error:
-              'آپلود PDF موقتاً غیرفعال است. لطفاً از فایل TXT استفاده کنید.',
-          });
-      } else if (file.mimetype === 'text/plain') {
+      if (file.mimetype === 'text/plain') {
         textContent = fs.readFileSync(file.path, 'utf8');
+        fileType = 'txt';
       } else {
-        fs.unlinkSync(file.path);
+        // فعلا PDF غیرفعال است طبق توافق قبلی
+        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
         return res
           .status(400)
-          .json({ error: 'Unsupported file type. Use TXT.' });
+          .json({ error: 'Only TXT files supported currently.' });
       }
 
-      // تمیزکاری فایل موقت
       if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
 
       // ارسال به آژور
-      const success = await azureService.addDocument(
+      // نکته: ما docId را اینجا میسازیم یا از آژور میگیریم؟
+      // در سرویس آژور (azureService) دیدیم که خودش ID میسازد.
+      // باید سرویس را طوری تغییر دهیم که ID را برگرداند تا ما ذخیره کنیم.
+
+      // ** اصلاح موقت: ** بیایید فرض کنیم azureService.addDocument شناسه docId را برمیگرداند
+      // (باید سرویس آژور را هم کمی اصلاح کنیم که ID برگرداند)
+
+      const docId = await azureService.addDocument(
         ig_accountId,
         file.originalname,
         textContent
       );
 
-      if (success) {
-        res.json({ success: true, message: 'File processed and indexed.' });
+      if (docId) {
+        // ذخیره در دیتابیس ما
+        const newDoc = await KnowledgeDoc.create({
+          ig_accountId,
+          fileName: file.originalname,
+          fileType,
+          azureDocId: docId, // این را لازم داریم برای حذف
+        });
+        res.json(newDoc);
       } else {
         res.status(500).json({ error: 'Indexing failed.' });
       }
     } catch (e) {
-      // حذف فایل در صورت ارور
       if (req.file && fs.existsSync(req.file.path))
         fs.unlinkSync(req.file.path);
       res.status(500).json({ error: e.message });
@@ -77,17 +98,36 @@ router.post(
   }
 );
 
-// 2. تست چت (Playground API)
-router.post('/test-chat', authMiddleware, async (req, res) => {
+// 3. حذف فایل
+router.delete('/:id', authMiddleware, async (req, res) => {
   try {
-    const { ig_accountId, query, systemPrompt } = req.body;
+    const doc = await KnowledgeDoc.findById(req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Document not found' });
 
+    // چک مالکیت
     const account = await IGConnections.findOne({
-      ig_userId: ig_accountId,
+      ig_userId: doc.ig_accountId,
       user_id: req.user.id,
     });
     if (!account) return res.status(403).json({ error: 'Access denied' });
 
+    // حذف از آژور
+    await azureService.deleteDocument(doc.azureDocId);
+
+    // حذف از دیتابیس
+    await KnowledgeDoc.findByIdAndDelete(req.params.id);
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 4. تست چت (مثل قبل)
+router.post('/test-chat', authMiddleware, async (req, res) => {
+  // ... (کد قبلی بدون تغییر) ...
+  try {
+    const { ig_accountId, query, systemPrompt } = req.body;
     const response = await azureService.askAI(
       ig_accountId,
       query,

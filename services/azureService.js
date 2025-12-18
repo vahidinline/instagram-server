@@ -1,10 +1,10 @@
 const { AzureOpenAI } = require('openai');
 const { AzureKeyCredential } = require('@azure/core-auth');
 const { SearchIndexClient, SearchClient } = require('@azure/search-documents');
-const crypto = require('crypto'); // <--- این خط حیاتی است
+const crypto = require('crypto');
+const Lead = require('../models/Lead'); // <--- اضافه شد: مدل لید
 
-// *** لاگ جدید برای اطمینان از آپدیت شدن ***
-console.log('🟣 AZURE SERVICE v5 - CRYPTO FIXED LOADED');
+console.log('🟢 AZURE SERVICE v5 - FUNCTION CALLING (LEADS) LOADED');
 
 // --- CONFIGURATION ---
 const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
@@ -21,12 +21,14 @@ if (!endpoint || !apiKey || !searchEndpoint || !searchKey) {
   console.error('❌ MISSING AZURE CONFIG in .env');
 }
 
+// 1. ساخت کلاینت OpenAI
 const openai = new AzureOpenAI({
   endpoint,
   apiKey,
   apiVersion,
 });
 
+// 2. ساخت کلاینت‌های جستجو
 const searchIndexClient = new SearchIndexClient(
   searchEndpoint,
   new AzureKeyCredential(searchKey)
@@ -36,6 +38,33 @@ const searchClient = new SearchClient(
   indexName,
   new AzureKeyCredential(searchKey)
 );
+
+// 3. تعریف ابزارها (Tools) برای Function Calling
+const tools = [
+  {
+    type: 'function',
+    function: {
+      name: 'save_lead_info',
+      description:
+        'Extract and save user contact information (Lead) when provided in the chat.',
+      parameters: {
+        type: 'object',
+        properties: {
+          phone: {
+            type: 'string',
+            description: 'User phone number (e.g., 0912...)',
+          },
+          name: { type: 'string', description: "User's name if provided" },
+          product: {
+            type: 'string',
+            description: 'Product or service the user is interested in',
+          },
+        },
+        required: ['phone'],
+      },
+    },
+  },
+];
 
 const azureService = {
   ensureIndexExists: async () => {
@@ -90,8 +119,6 @@ const azureService = {
     try {
       await azureService.ensureIndexExists();
       const vector = await azureService.getEmbedding(content);
-
-      // استفاده از crypto
       const docId = crypto.randomBytes(16).toString('hex');
 
       const documents = [
@@ -113,14 +140,32 @@ const azureService = {
     }
   },
 
+  deleteDocument: async (docId) => {
+    try {
+      const documents = [{ id: docId, '@search.action': 'delete' }];
+      await searchClient.uploadDocuments(documents);
+      console.log(`🗑️ Document ${docId} deleted.`);
+      return true;
+    } catch (e) {
+      console.error('Azure Delete Error:', e.message);
+      return false;
+    }
+  },
+
+  /**
+   * جستجو و پاسخ هوشمند (RAG + Function Calling)
+   */
   askAI: async (
     igAccountId,
     userQuery,
-    systemInstruction = 'You are a helpful assistant.'
+    systemInstruction = 'You are a helpful assistant.',
+    senderData = {}
   ) => {
     try {
+      // الف: وکتور کردن سوال
       const queryVector = await azureService.getEmbedding(userQuery);
 
+      // ب: جستجو در آژور سرچ
       const searchResults = await searchClient.search(userQuery, {
         vectorQueries: [
           {
@@ -134,27 +179,94 @@ const azureService = {
         select: ['content'],
       });
 
+      // ج: ساخت کانتکست
       let context = '';
       for await (const result of searchResults.results) {
         context += result.document.content + '\n---\n';
       }
 
+      // د: آماده‌سازی پیام‌ها برای GPT
+      const messages = [
+        {
+          role: 'system',
+          content: `${systemInstruction}\n\nCONTEXT FROM DATABASE:\n${context}\n\nIMPORTANT: If the user provides their phone number, you MUST use the 'save_lead_info' tool.`,
+        },
+        { role: 'user', content: userQuery },
+      ];
+
+      // هـ: ارسال اولیه به GPT
       const response = await openai.chat.completions.create({
         model: chatDeployment,
-        messages: [
-          {
-            role: 'system',
-            content: `${systemInstruction}\n\nContext:\n${context}`,
-          },
-          { role: 'user', content: userQuery },
-        ],
+        messages: messages,
         temperature: 0.5,
+        tools: tools, // ابزارها را معرفی میکنیم
+        tool_choice: 'auto',
       });
 
-      return response.choices[0].message.content;
+      const choice = response.choices[0];
+      const message = choice.message;
+
+      // و: بررسی اینکه آیا GPT می‌خواهد تابعی را صدا بزند؟
+      if (message.tool_calls && message.tool_calls.length > 0) {
+        const toolCall = message.tool_calls[0];
+
+        if (toolCall.function.name === 'save_lead_info') {
+          const args = JSON.parse(toolCall.function.arguments);
+          console.log('🎣 AI is capturing a LEAD:', args);
+
+          // 1. ذخیره در دیتابیس (Lead)
+          try {
+            await Lead.create({
+              ig_accountId: igAccountId,
+              instagram_user_id: senderData.id || 'unknown',
+              instagram_username: senderData.username || 'unknown',
+              instagram_fullname: senderData.fullname || '',
+              phone: args.phone,
+              extracted_name: args.name,
+              interest_product: args.product,
+            });
+            console.log('✅ Lead saved to DB.');
+          } catch (dbError) {
+            console.log(
+              '⚠️ Lead save warning (likely duplicate):',
+              dbError.message
+            );
+          }
+
+          // 2. بازگشت نتیجه تابع به GPT برای تولید متن نهایی
+          messages.push(message); // اضافه کردن درخواست ابزار به تاریخچه
+          messages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: JSON.stringify({
+              success: true,
+              message: 'Lead saved successfully. Thank the user.',
+            }),
+          });
+
+          // 3. درخواست دوم برای گرفتن متن نهایی
+          const finalResponse = await openai.chat.completions.create({
+            model: chatDeployment,
+            messages: messages,
+          });
+
+          return {
+            content: finalResponse.choices[0].message.content,
+            usage: finalResponse.usage, // مصرف توکن (مجموع هر دو درخواست)
+            leadCaptured: true,
+          };
+        }
+      }
+
+      // ز: حالت عادی (بدون صدا زدن ابزار)
+      return {
+        content: message.content,
+        usage: response.usage,
+        leadCaptured: false,
+      };
     } catch (e) {
       console.error('AI Generation Error:', e.message);
-      return 'خطایی در پردازش هوشمند رخ داد.';
+      return null;
     }
   },
 };

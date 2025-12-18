@@ -1,27 +1,27 @@
 const mongoose = require('mongoose');
 
 const PlanSchema = new mongoose.Schema({
-  name: { type: String, required: true }, // مثال: "حرفه‌ای"
-  slug: { type: String, required: true, unique: true }, // مثال: "pro_monthly"
+  name: { type: String, required: true },
+  slug: { type: String, required: true, unique: true },
   description: String,
-  price: { type: Number, required: true }, // قیمت به تومان
-  durationDays: { type: Number, default: 30 }, // مدت اعتبار (۳۰ روز)
+  price: { type: Number, required: true },
+  durationDays: { type: Number, default: 30 },
 
-  // محدودیت‌های قابل شمارش (Quota)
+  // محدودیت‌های قابل شمارش
   limits: {
-    messageCount: { type: Number, default: 1000 }, // تعداد پیام مجاز
-    accountCount: { type: Number, default: 1 }, // تعداد اکانت اینستاگرام مجاز
+    messageCount: { type: Number, default: 1000 },
+    accountCount: { type: Number, default: 1 },
+    aiTokenLimit: { type: Number, default: 0 }, // <--- جدید: سقف توکن هوش مصنوعی
   },
 
-  // قابلیت‌های بولین (دسترسی دارد/ندارد)
   features: {
-    aiAccess: { type: Boolean, default: false }, // دسترسی به هوش مصنوعی
+    aiAccess: { type: Boolean, default: false },
     removeBranding: { type: Boolean, default: false },
     prioritySupport: { type: Boolean, default: false },
   },
 
-  isActive: { type: Boolean, default: true }, // برای آرشیو کردن پلن‌های قدیمی
-  sortOrder: { type: Number, default: 0 }, // برای نمایش در فرانت
+  isActive: { type: Boolean, default: true },
+  sortOrder: { type: Number, default: 0 },
 });
 
 module.exports = mongoose.model('Plan', PlanSchema);

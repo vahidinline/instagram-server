@@ -8,21 +8,22 @@ const SubscriptionSchema = new mongoose.Schema({
   },
   plan_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan' },
 
-  // *** Snapshot: کپی کردن لیمیت‌ها در لحظه خرید ***
-  // این باعث می‌شود تغییرات آینده پلن روی کاربر فعلی اثر نگذارد
+  // Snapshot از لیمیت‌ها
   currentLimits: {
     messageCount: Number,
     accountCount: Number,
+    aiTokenLimit: Number, // <--- جدید
   },
   currentFeatures: {
     aiAccess: Boolean,
     removeBranding: Boolean,
   },
 
-  // *** Usage Tracking: مصرف لحظه‌ای ***
+  // Usage Tracking
   usage: {
     messagesUsed: { type: Number, default: 0 },
     accountsUsed: { type: Number, default: 0 },
+    aiTokensUsed: { type: Number, default: 0 }, // <--- جدید: کنتور مصرف توکن
   },
 
   startDate: { type: Date, default: Date.now },

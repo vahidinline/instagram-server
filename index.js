@@ -119,6 +119,8 @@ io.on('connection', (socket) => {
 });
 
 app.get('/', (req, res) => res.send('Server is Running 🚀'));
+app.use('/api/personas', require('./routes/personas'));
+app.use('/api/admin', require('./routes/admin'));
 
 server.listen(app.get('port'), () => {
   console.log(`🚀 Server listening on port ${app.get('port')}`);
