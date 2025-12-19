@@ -1,32 +1,17 @@
 const mongoose = require('mongoose');
 
 const MessageLogSchema = new mongoose.Schema({
-  app_userId: { type: String, required: false }, // مالک پنل (ادمین)
   ig_accountId: { type: String, required: true }, // اکانت بیزینسی ما
 
   // طرف مقابل (مشتری)
   sender_id: { type: String, required: true },
   sender_username: { type: String, default: 'Instagram User' },
   sender_avatar: { type: String, default: '' },
-  direction: { type: String, enum: ['incoming', 'outgoing'], required: true },
-  sentiment: {
-    type: String,
-    enum: ['positive', 'neutral', 'negative'],
-    default: null,
-  },
 
   // محتوا
   message_type: {
     type: String,
-    enum: [
-      'text',
-      'image',
-      'story_reply',
-      'unknown',
-      'replied_ai',
-      'processed_ai',
-      'replied_comment',
-    ],
+    enum: ['text', 'image', 'story_reply', 'unknown'],
     default: 'text',
   },
   content: { type: String },
@@ -34,14 +19,23 @@ const MessageLogSchema = new mongoose.Schema({
   // جهت پیام
   direction: { type: String, enum: ['incoming', 'outgoing'], required: true },
 
-  // وضعیت (برای آنالیز)
+  // *** بخش مهم: لیست وضعیت‌های مجاز ***
   status: {
     type: String,
-    enum: ['received', 'processed', 'replied', 'failed', 'ignored'],
+    enum: [
+      'received', // دریافت شد
+      'processed', // پردازش شد (تریگر)
+      'replied', // پاسخ داده شد (تریگر)
+      'failed', // خطا
+      'ignored', // نادیده گرفته شد (خاموشی ربات)
+      'replied_ai', // پاسخ هوش مصنوعی (جدید) ✅
+      'processed_ai', // پردازش شده توسط AI (جدید) ✅
+      'replied_comment', // پاسخ دایرکت به کامنت (جدید) ✅
+    ],
     default: 'received',
   },
 
-  // کدام تریگر باعث این پاسخ شد؟ (برای آمارگیری تریگرها)
+  // کدام تریگر باعث این پاسخ شد؟ (برای AI نال است)
   triggered_by: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Triggers',
@@ -51,7 +45,7 @@ const MessageLogSchema = new mongoose.Schema({
   created_at: { type: Date, default: Date.now },
 });
 
-// ایندکس‌گذاری برای سرعت بالا در کوئری‌های آنالیز
+// ایندکس‌گذاری برای سرعت بالا
 MessageLogSchema.index({ ig_accountId: 1, created_at: -1 });
 MessageLogSchema.index({ sender_id: 1 });
 

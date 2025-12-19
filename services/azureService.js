@@ -4,9 +4,7 @@ const { SearchIndexClient, SearchClient } = require('@azure/search-documents');
 const crypto = require('crypto');
 const Lead = require('../models/Lead');
 
-console.log(
-  '🟢 AZURE SERVICE v7 - FINAL FULL FEATURES (RAG + TOOLS + CONFIG) LOADED'
-);
+console.log('🟢 AZURE SERVICE vFINAL - ALL FEATURES LOADED');
 
 // --- CONFIGURATION ---
 const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
@@ -19,7 +17,6 @@ const searchEndpoint = process.env.AZURE_SEARCH_ENDPOINT;
 const searchKey = process.env.AZURE_SEARCH_KEY;
 const indexName = process.env.AZURE_SEARCH_INDEX_NAME || 'knowledge-base-index';
 
-// بررسی مقادیر محیطی
 if (!endpoint || !apiKey || !searchEndpoint || !searchKey) {
   console.error('❌ MISSING AZURE CONFIG in .env');
 }
@@ -78,7 +75,6 @@ const azureService = {
       await searchIndexClient.getIndex(indexName);
     } catch (e) {
       console.log('⚠️ Index not found. Creating new index...');
-
       const indexObj = {
         name: indexName,
         fields: [
@@ -104,7 +100,6 @@ const azureService = {
           ],
         },
       };
-
       await searchIndexClient.createIndex(indexObj);
       console.log('✅ Azure Search Index Created.');
     }
@@ -132,10 +127,7 @@ const azureService = {
   addDocument: async (igAccountId, title, content) => {
     try {
       await azureService.ensureIndexExists();
-
       const vector = await azureService.getEmbedding(content);
-
-      // تولید شناسه امن
       const docId = crypto.randomBytes(16).toString('hex');
 
       const documents = [
@@ -150,7 +142,7 @@ const azureService = {
 
       await searchClient.uploadDocuments(documents);
       console.log(`✅ Document indexed for ${igAccountId}`);
-      return docId; // شناسه سند را برمی‌گردانیم
+      return docId;
     } catch (e) {
       console.error('Indexing Error:', e.message);
       return false;
@@ -173,12 +165,47 @@ const azureService = {
   },
 
   /**
-   * جستجو و پاسخ هوشمند (RAG + Tools + Config)
+   * تحلیل هوشمند پیام (CRM Intelligence)
+   * خروجی JSON شامل احساسات، تگ‌ها و امتیاز
+   */
+  analyzeMessage: async (text) => {
+    try {
+      const systemPrompt = `
+      You are an AI analyst for a CRM system.
+      Analyze the user's message in Persian context.
+
+      OUTPUT FORMAT (JSON ONLY):
+      {
+        "sentiment": "positive" | "neutral" | "negative",
+        "tags": ["Array of short keywords", "Max 3 tags"],
+        "score": Integer (0-100, where 100 is high purchase intent)
+      }
+      `;
+
+      const response = await openai.chat.completions.create({
+        model: chatDeployment,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: text },
+        ],
+        temperature: 0.3,
+        response_format: { type: 'json_object' },
+      });
+
+      return JSON.parse(response.choices[0].message.content);
+    } catch (e) {
+      console.error('Analysis Error:', e.message);
+      return { sentiment: 'neutral', tags: [], score: 0 };
+    }
+  },
+
+  /**
+   * جستجو و پاسخ هوشمند (RAG + Tools)
    */
   askAI: async (
     igAccountId,
     userQuery,
-    systemInstruction,
+    systemInstruction = 'You are a helpful assistant.',
     senderData = {},
     aiConfig = {}
   ) => {
@@ -186,10 +213,6 @@ const azureService = {
       // تنظیمات پیش‌فرض
       const strictMode = aiConfig.strictMode ?? false;
       const temperature = aiConfig.creativity ?? 0.5;
-
-      console.log(
-        `🤖 AI Request | Account: ${igAccountId} | Strict: ${strictMode} | Temp: ${temperature}`
-      );
 
       // 1. وکتور کردن سوال
       const queryVector = await azureService.getEmbedding(userQuery);
@@ -199,7 +222,7 @@ const azureService = {
         vectorQueries: [
           {
             vector: queryVector,
-            k: 5, // 5 نتیجه برتر برای دقت بیشتر
+            k: 5,
             fields: ['contentVector'],
             kind: 'vector',
           },
@@ -216,7 +239,7 @@ const azureService = {
 
       if (!context) console.log('⚠️ No context found in KB.');
 
-      // 4. ساخت دستورالعمل پویا بر اساس تنظیمات
+      // 4. ساخت دستورالعمل پویا
       let promptLogic = '';
       if (strictMode) {
         promptLogic = `
@@ -229,7 +252,7 @@ const azureService = {
         promptLogic = `
           INSTRUCTIONS:
           1. Use the provided Context as your primary source.
-          2. If the answer is not in the Context, use your general knowledge to answer politely.
+          2. If the answer is not in the Context, use your general knowledge.
           3. Prioritize the business information provided in the Context.
           `;
       }
@@ -261,7 +284,6 @@ const azureService = {
           const args = JSON.parse(toolCall.function.arguments);
           console.log('🎣 Lead Captured:', args);
 
-          // ذخیره در دیتابیس (با بررسی اینکه مدل Lead وجود دارد)
           try {
             await Lead.create({
               ig_accountId: igAccountId,
@@ -310,6 +332,10 @@ const azureService = {
       return null;
     }
   },
+
+  /**
+   * چت ساده برای دمو (بدون RAG و Tools)
+   */
   simpleChat: async (userMessage, systemPrompt) => {
     try {
       const response = await openai.chat.completions.create({
@@ -320,44 +346,11 @@ const azureService = {
         ],
         temperature: 0.7,
       });
+
       return response.choices[0].message.content;
     } catch (e) {
       console.error('Simple Chat Error:', e.message);
-      return 'مشکلی در سرویس دمو پیش آمده.';
-    }
-  },
-
-  /**
-   * تحلیل هوشمند پیام (احساسات + تگ‌گذاری + امتیازدهی)
-   * خروجی JSON برای کاهش مصرف توکن و سرعت بالا
-   */
-  analyzeMessage: async (text) => {
-    try {
-      const systemPrompt = `
-      Analyze the sentiment and intent of the user's message in Persian context.
-      Return JSON ONLY. Format:
-      {
-        "sentiment": "positive" | "neutral" | "negative",
-        "tags": ["tag1", "tag2"], (Max 3 tags, e.g., "Price Inquiry", "Complaint", "Support", "Ordering"),
-        "score": number (0-100, where 100 is high purchase intent)
-      }
-      `;
-
-      const response = await openai.chat.completions.create({
-        model: chatDeployment, // یا مدل ارزان‌تر مثل gpt-35-turbo
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: text },
-        ],
-        temperature: 0.3,
-        response_format: { type: 'json_object' }, // تضمین خروجی JSON
-      });
-
-      return JSON.parse(response.choices[0].message.content);
-    } catch (e) {
-      console.error('Analysis Error:', e.message);
-      // مقادیر پیش‌فرض در صورت خطا
-      return { sentiment: 'neutral', tags: [], score: 10 };
+      return 'مشکلی در سرویس دمو پیش آمده. لطفا بعدا تلاش کنید.';
     }
   },
 };

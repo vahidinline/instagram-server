@@ -14,10 +14,10 @@ const GRAPH_URL = 'https://graph.instagram.com/v22.0';
  * 📨 پردازش پیام دایرکت (DM)
  */
 async function handleMessage(entry, messaging) {
-  // 1. جلوگیری از لوپ (پیام‌های اکو)
+  // 1. جلوگیری از لوپ
   if (messaging.message && messaging.message.is_echo) return;
 
-  const igAccountId = entry.id; // اکانت بیزینس ما
+  const igAccountId = entry.id; // اکانت بیزینس
   const senderId = messaging.sender.id; // مشتری
   const text = messaging.message?.text;
 
@@ -25,7 +25,7 @@ async function handleMessage(entry, messaging) {
 
   console.log(`📥 New Message from ${senderId}: ${text}`);
 
-  // 2. بررسی اشتراک و محدودیت (Gatekeeper)
+  // 2. بررسی اشتراک
   const quotaCheck = await subManager.checkLimit(igAccountId);
   if (!quotaCheck.allowed) {
     console.log(`⛔ Message Blocked: ${quotaCheck.reason}`);
@@ -50,33 +50,47 @@ async function handleMessage(entry, messaging) {
     };
     const aiConfig = connection.aiConfig || { enabled: false };
 
-    // 4. دریافت/آپدیت پروفایل کاربر و CRM (همزمان)
+    // 4. پروفایل و تحلیل CRM (همزمان برای سرعت)
     let userInfo = {
       username: 'Instagram User',
       profile_picture: '',
       name: '',
     };
-    let analysis = { sentiment: 'neutral', tags: [], score: 0 };
 
-    // الف: تلاش برای گرفتن پروفایل
-    if (token) {
+    // تلاش برای گرفتن پروفایل (اگر قبلا کش نشده)
+    // در نسخه بهینه، اول از کاستومر دیتابیس میخوانیم
+    const existingCustomer = await Customer.findOne({
+      ig_accountId: igAccountId,
+      sender_id: senderId,
+    });
+
+    if (existingCustomer && existingCustomer.username) {
+      userInfo = {
+        username: existingCustomer.username,
+        name: existingCustomer.fullName,
+        profile_picture: existingCustomer.profilePic,
+      };
+    } else if (token) {
       userInfo = await fetchUserProfile(senderId, igAccountId, token);
     }
 
-    // ب: تحلیل هوشمند (اگر AI فعال باشد و کاربر Pro باشد)
+    // تحلیل احساسات (اگر کاربر پرو است)
+    let analysis = { sentiment: 'neutral', tags: [], score: 0 };
     const hasAiAccess = subManager.checkFeatureAccess(
       quotaCheck.subscription,
       'aiAccess'
     );
+
     if (hasAiAccess && text.length > 2) {
-      // تحلیل در پس‌زمینه انجام می‌شود تا سرعت حفظ شود
-      azureService
-        .analyzeMessage(text)
-        .then((res) => (analysis = res))
-        .catch(() => {});
+      // این عملیات در پس‌زمینه انجام می‌شود تا بلاک نکند، اما منتظر نتیجه میمانیم
+      try {
+        analysis = await azureService.analyzeMessage(text);
+      } catch (e) {
+        console.error('CRM Analysis Failed');
+      }
     }
 
-    // ج: آپدیت پروفایل مشتری (CRM)
+    // آپدیت پروفایل CRM
     try {
       await Customer.findOneAndUpdate(
         { ig_accountId: igAccountId, sender_id: senderId },
@@ -97,7 +111,7 @@ async function handleMessage(entry, messaging) {
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
     } catch (e) {
-      console.error('CRM Update Error:', e.message);
+      console.error('CRM DB Update Error:', e.message);
     }
 
     // 5. ذخیره پیام ورودی
@@ -112,7 +126,7 @@ async function handleMessage(entry, messaging) {
       sentiment: analysis.sentiment,
     });
 
-    // *** ارسال فوری به سوکت (نمایش پیام مشتری) ***
+    // ارسال به سوکت
     if (global.io) {
       global.io.to(igAccountId).emit('new_message', incomingLog);
     }
@@ -128,7 +142,6 @@ async function handleMessage(entry, messaging) {
       const flow = await Flows.findById(trigger.flow_id);
 
       if (flow) {
-        // اعمال تاخیر
         if (botConfig.responseDelay > 0) {
           await new Promise((r) =>
             setTimeout(r, botConfig.responseDelay * 1000)
@@ -140,7 +153,7 @@ async function handleMessage(entry, messaging) {
           let messageType = 'replied';
           let tokensUsed = 0;
 
-          // *** فلوهای ترکیبی (Hybrid AI) ***
+          // فلوهای ترکیبی (Hybrid AI)
           if (msg.type === 'ai_response') {
             if (!hasAiAccess) continue;
             const hasTokens = await subManager.checkAiLimit(
@@ -178,7 +191,6 @@ async function handleMessage(entry, messaging) {
             messageType = 'replied_ai';
           }
 
-          // ارسال پیام نهایی
           const sent = await sendReply(
             igAccountId,
             senderId,
@@ -187,7 +199,6 @@ async function handleMessage(entry, messaging) {
           );
 
           if (sent) {
-            // کسر هزینه
             if (tokensUsed > 0) {
               await subManager.incrementAiUsage(
                 quotaCheck.subscription._id,
@@ -197,7 +208,6 @@ async function handleMessage(entry, messaging) {
               await subManager.incrementUsage(quotaCheck.subscription._id);
             }
 
-            // ذخیره پیام خروجی
             const replyLog = await MessageLog.create({
               ig_accountId: igAccountId,
               sender_id: senderId,
@@ -209,21 +219,18 @@ async function handleMessage(entry, messaging) {
               triggered_by: trigger._id,
             });
 
-            // *** ارسال پیام ربات به سوکت (نمایش در اینباکس) ***
             if (global.io)
               global.io.to(igAccountId).emit('new_message', replyLog);
           }
         }
-        // افزایش آمار فلو
         await Flows.findByIdAndUpdate(trigger.flow_id, {
           $inc: { usage_count: 1 },
         });
-
         incomingLog.status = 'processed';
         await incomingLog.save();
       }
     }
-    // 8. هوش مصنوعی خالص (اگر تریگر نبود)
+    // 8. هوش مصنوعی خالص
     else if (aiConfig.enabled) {
       if (!hasAiAccess) return;
       const hasTokens = await subManager.checkAiLimit(quotaCheck.subscription);
@@ -277,7 +284,6 @@ async function handleMessage(entry, messaging) {
             status: 'replied_ai',
           });
 
-          // *** ارسال پاسخ هوش مصنوعی به سوکت ***
           if (global.io)
             global.io.to(igAccountId).emit('new_message', replyLog);
 
@@ -302,7 +308,6 @@ async function handleComment(entry, change) {
   const senderId = comment.from?.id;
   const senderUsername = comment.from?.username;
 
-  // استخراج مدیا آی‌دی
   const mediaId = comment.media?.id;
 
   if (!text || !senderId) return;
@@ -346,7 +351,7 @@ async function handleComment(entry, change) {
         }
       }
 
-      // ب) آماده‌سازی متن دایرکت
+      // ب) دایرکت خصوصی
       let messageToSend = flow.messages[0].content;
       if (botConfig.checkFollow) {
         messageToSend = `${
@@ -362,7 +367,6 @@ async function handleComment(entry, change) {
             .join('\n');
       }
 
-      // ج) ارسال دایرکت خصوصی
       try {
         await axios.post(
           `${GRAPH_URL}/me/messages`,
@@ -376,8 +380,7 @@ async function handleComment(entry, change) {
         console.log('✅ Private Reply Sent.');
         await subManager.incrementUsage(quotaCheck.subscription._id);
 
-        // ذخیره لاگ پیام دایرکت شده
-        const replyLog = await MessageLog.create({
+        await MessageLog.create({
           ig_accountId: igAccountId,
           sender_id: senderId,
           sender_username: senderUsername,
@@ -386,9 +389,6 @@ async function handleComment(entry, change) {
           status: 'replied_comment',
           triggered_by: trigger._id,
         });
-
-        // *** ارسال به سوکت (نمایش در اینباکس) ***
-        if (global.io) global.io.to(igAccountId).emit('new_message', replyLog);
       } catch (e) {
         console.error('❌ Private Reply Error:', e.response?.data || e.message);
       }
