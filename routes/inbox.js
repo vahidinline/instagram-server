@@ -3,7 +3,7 @@ const router = express.Router();
 const axios = require('axios');
 const MessageLog = require('../models/MessageLogs');
 const IGConnections = require('../models/IG-Connections');
-
+const Customer = require('../models/Customer');
 // نسخه API
 const GRAPH_URL = 'https://graph.instagram.com/v22.0';
 
@@ -102,6 +102,32 @@ router.post('/send', async (req, res) => {
   } catch (e) {
     console.error('Manual Send Error:', e.response?.data || e.message);
     res.status(500).json({ error: 'Failed to send message via Instagram API' });
+  }
+});
+
+// 4. دریافت پروفایل CRM مشتری
+router.get('/customer/:senderId', async (req, res) => {
+  try {
+    const { ig_accountId } = req.query;
+    const { senderId } = req.params;
+
+    const customer = await Customer.findOne({
+      ig_accountId,
+      sender_id: senderId,
+    });
+
+    if (!customer) {
+      return res.json({
+        sentimentLabel: 'neutral',
+        tags: [],
+        leadScore: 0,
+        interactionCount: 0,
+      });
+    }
+
+    res.json(customer);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 

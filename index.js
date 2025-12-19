@@ -61,8 +61,8 @@ const flowRoutes = require('./routes/flows');
 const analyticsRoutes = require('./routes/analytics');
 const inboxRoutes = require('./routes/inbox');
 const paymentRoutes = require('./routes/payment');
-const knowledgeRoutes = require('./routes/knowledge'); // <--- احتمالا این را هم اضافه نکرده بودید (چک کنید)
-
+const knowledgeRoutes = require('./routes/knowledge');
+const leadsRoutes = require('./routes/leads');
 // --- API ENDPOINTS ---
 app.use('/api/auth', userAuthRoutes);
 app.use('/auth', instagramAuthRoutes);
@@ -72,8 +72,8 @@ app.use('/api/flows', flowRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/inbox', inboxRoutes);
 app.use('/api/payment', paymentRoutes);
-app.use('/api/knowledge', knowledgeRoutes); // <--- روت نالیج
-
+app.use('/api/knowledge', knowledgeRoutes);
+app.use('/api/leads', leadsRoutes);
 // --- WEBHOOK VERIFICATION ---
 app.get('/instagram', function (req, res) {
   if (
@@ -121,7 +121,7 @@ io.on('connection', (socket) => {
 app.get('/', (req, res) => res.send('Server is Running 🚀'));
 app.use('/api/personas', require('./routes/personas'));
 app.use('/api/admin', require('./routes/admin'));
-
+app.use('/api/demo', require('./routes/demo'));
 server.listen(app.get('port'), () => {
   console.log(`🚀 Server listening on port ${app.get('port')}`);
 });

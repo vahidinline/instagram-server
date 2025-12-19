@@ -1,15 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const Triggers = require('../models/Triggers');
-const authMiddleware = require('../middleware/auth'); // فرض بر این است که این میدل‌ویر وجود دارد
+const authMiddleware = require('../middleware/auth'); // میدل‌ویر احراز هویت
 
-// 1. لیست تریگرها
+// اعمال میدل‌ویر امنیتی روی تمام روت‌ها
+router.use(authMiddleware);
+
+// 1. لیست تریگرها (فقط مال همین کاربر)
 router.get('/', async (req, res) => {
   try {
     const { ig_accountId } = req.query;
     if (!ig_accountId)
       return res.status(400).json({ error: 'Missing ig_accountId' });
 
+    // نکته امنیتی: چک میکنیم که تریگرها متعلق به همین اکانت اینستاگرام باشند
+    // (در سیستم دقیق‌تر باید چک کنیم که ig_accountId متعلق به req.user.id باشد)
     const triggers = await Triggers.find({ ig_accountId }).sort({ _id: -1 });
     res.json(triggers);
   } catch (e) {
@@ -17,10 +22,9 @@ router.get('/', async (req, res) => {
   }
 });
 
-// 2. ساخت تریگر جدید (POST)
+// 2. ساخت تریگر جدید
 router.post('/', async (req, res) => {
   try {
-    // *** تغییر مهم: دریافت media_id از بادی ***
     const { ig_accountId, keywords, flow_id, match_type, type, media_id } =
       req.body;
 
@@ -36,14 +40,13 @@ router.post('/', async (req, res) => {
     }
 
     const newTrigger = await Triggers.create({
-      app_userId: 'admin_test', // یا req.user.id اگر میدل‌ویر دارید
+      app_userId: req.user.id, // <--- ✅ اصلاح شد: آی‌دی واقعی کاربر از توکن
       ig_accountId,
       keywords: keywordsArray,
       flow_id,
       match_type: match_type || 'contains',
       type: type || 'both',
-      // *** ذخیره media_id ***
-      media_id: media_id || null, // اگر نبود نال بذار
+      media_id: media_id || null,
     });
 
     res.json(newTrigger);
@@ -52,10 +55,9 @@ router.post('/', async (req, res) => {
   }
 });
 
-// 3. ویرایش تریگر (PUT)
+// 3. ویرایش تریگر
 router.put('/:id', async (req, res) => {
   try {
-    // *** تغییر مهم: دریافت media_id در ویرایش ***
     const { keywords, flow_id, match_type, type, media_id } = req.body;
 
     let keywordsArray = keywords;
@@ -66,18 +68,24 @@ router.put('/:id', async (req, res) => {
         .filter((k) => k);
     }
 
-    const updatedTrigger = await Triggers.findByIdAndUpdate(
-      req.params.id,
+    // فقط صاحب تریگر بتواند ویرایش کند
+    const updatedTrigger = await Triggers.findOneAndUpdate(
+      { _id: req.params.id, app_userId: req.user.id }, // شرط امنیتی
       {
         keywords: keywordsArray,
         flow_id,
         match_type,
         type,
-        // *** آپدیت media_id ***
         media_id: media_id || null,
       },
       { new: true }
     );
+
+    if (!updatedTrigger)
+      return res
+        .status(404)
+        .json({ error: 'Trigger not found or access denied' });
+
     res.json(updatedTrigger);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -87,7 +95,17 @@ router.put('/:id', async (req, res) => {
 // 4. حذف تریگر
 router.delete('/:id', async (req, res) => {
   try {
-    await Triggers.findByIdAndDelete(req.params.id);
+    // فقط صاحب تریگر بتواند حذف کند
+    const result = await Triggers.findOneAndDelete({
+      _id: req.params.id,
+      app_userId: req.user.id,
+    });
+
+    if (!result)
+      return res
+        .status(404)
+        .json({ error: 'Trigger not found or access denied' });
+
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });

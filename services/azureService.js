@@ -310,6 +310,56 @@ const azureService = {
       return null;
     }
   },
+  simpleChat: async (userMessage, systemPrompt) => {
+    try {
+      const response = await openai.chat.completions.create({
+        model: chatDeployment,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userMessage },
+        ],
+        temperature: 0.7,
+      });
+      return response.choices[0].message.content;
+    } catch (e) {
+      console.error('Simple Chat Error:', e.message);
+      return 'مشکلی در سرویس دمو پیش آمده.';
+    }
+  },
+
+  /**
+   * تحلیل هوشمند پیام (احساسات + تگ‌گذاری + امتیازدهی)
+   * خروجی JSON برای کاهش مصرف توکن و سرعت بالا
+   */
+  analyzeMessage: async (text) => {
+    try {
+      const systemPrompt = `
+      Analyze the sentiment and intent of the user's message in Persian context.
+      Return JSON ONLY. Format:
+      {
+        "sentiment": "positive" | "neutral" | "negative",
+        "tags": ["tag1", "tag2"], (Max 3 tags, e.g., "Price Inquiry", "Complaint", "Support", "Ordering"),
+        "score": number (0-100, where 100 is high purchase intent)
+      }
+      `;
+
+      const response = await openai.chat.completions.create({
+        model: chatDeployment, // یا مدل ارزان‌تر مثل gpt-35-turbo
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: text },
+        ],
+        temperature: 0.3,
+        response_format: { type: 'json_object' }, // تضمین خروجی JSON
+      });
+
+      return JSON.parse(response.choices[0].message.content);
+    } catch (e) {
+      console.error('Analysis Error:', e.message);
+      // مقادیر پیش‌فرض در صورت خطا
+      return { sentiment: 'neutral', tags: [], score: 10 };
+    }
+  },
 };
 
 module.exports = azureService;

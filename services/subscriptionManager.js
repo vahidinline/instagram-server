@@ -2,6 +2,7 @@ const IGConnections = require('../models/IG-Connections');
 const Subscription = require('../models/Subscription');
 
 const subscriptionManager = {
+  // چک کردن کلی (تاریخ و تعداد پیام)
   checkLimit: async (igAccountId) => {
     try {
       const connection = await IGConnections.findOne({
@@ -22,10 +23,7 @@ const subscriptionManager = {
         return { allowed: false, reason: 'Subscription expired' };
       }
 
-      const limit = sub.currentLimits.messageCount;
-      const used = sub.usage.messagesUsed;
-
-      if (used >= limit) {
+      if (sub.usage.messagesUsed >= sub.currentLimits.messageCount) {
         return { allowed: false, reason: 'Message limit reached' };
       }
 
@@ -36,11 +34,24 @@ const subscriptionManager = {
     }
   },
 
-  // *** تابع جدید: بررسی اعتبار توکن ***
+  // *** جدید: چک کردن دسترسی به ویژگی خاص (مثل AI) ***
+  checkFeatureAccess: (subscription, featureName) => {
+    // featureName مثلا 'aiAccess'
+    if (
+      subscription &&
+      subscription.currentFeatures &&
+      subscription.currentFeatures[featureName] === true
+    ) {
+      return true;
+    }
+    console.log(`⛔ Feature Denied: ${featureName}`);
+    return false;
+  },
+
+  // چک کردن اعتبار توکن AI
   checkAiLimit: async (subscription) => {
     const limit = subscription.currentLimits.aiTokenLimit || 0;
     const used = subscription.usage.aiTokensUsed || 0;
-
     if (used >= limit) {
       console.log(`⛔ AI Token Limit Reached (${used}/${limit})`);
       return false;
@@ -48,18 +59,11 @@ const subscriptionManager = {
     return true;
   },
 
-  // *** تابع جدید: افزایش مصرف (پیام + توکن) ***
   incrementAiUsage: async (subscriptionId, tokensUsed) => {
     try {
       await Subscription.findByIdAndUpdate(subscriptionId, {
-        $inc: {
-          'usage.messagesUsed': 1, // یک پیام مصرف شد
-          'usage.aiTokensUsed': tokensUsed, // تعداد دقیق توکن کسر شد
-        },
+        $inc: { 'usage.messagesUsed': 1, 'usage.aiTokensUsed': tokensUsed },
       });
-      console.log(
-        `📉 Deducted ${tokensUsed} tokens from sub ${subscriptionId}`
-      );
     } catch (error) {
       console.error('Usage Increment Error:', error);
     }

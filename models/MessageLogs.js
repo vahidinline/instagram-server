@@ -8,6 +8,12 @@ const MessageLogSchema = new mongoose.Schema({
   sender_id: { type: String, required: true },
   sender_username: { type: String, default: 'Instagram User' },
   sender_avatar: { type: String, default: '' },
+  direction: { type: String, enum: ['incoming', 'outgoing'], required: true },
+  sentiment: {
+    type: String,
+    enum: ['positive', 'neutral', 'negative'],
+    default: null,
+  },
 
   // محتوا
   message_type: {
