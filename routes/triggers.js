@@ -1,11 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const Triggers = require('../models/Triggers');
+const authMiddleware = require('../middleware/auth'); // فرض بر این است که این میدل‌ویر وجود دارد
 
-// 1. لیست کردن تمام تریگرهای یک اکانت
+// 1. لیست تریگرها
 router.get('/', async (req, res) => {
   try {
-    const { ig_accountId } = req.query; // فرانت باید آی‌دی پیج رو بفرسته
+    const { ig_accountId } = req.query;
     if (!ig_accountId)
       return res.status(400).json({ error: 'Missing ig_accountId' });
 
@@ -16,17 +17,17 @@ router.get('/', async (req, res) => {
   }
 });
 
-// 2. ساخت تریگر جدید
+// 2. ساخت تریگر جدید (POST)
 router.post('/', async (req, res) => {
   try {
-    const { ig_accountId, keywords, flow_id, match_type, type } = req.body;
+    // *** تغییر مهم: دریافت media_id از بادی ***
+    const { ig_accountId, keywords, flow_id, match_type, type, media_id } =
+      req.body;
 
-    // تبدیل ورودی به آرایه (اگر کاربر با کاما جدا کرده بود یا آرایه فرستاده بود)
     let keywordsArray = [];
     if (Array.isArray(keywords)) {
       keywordsArray = keywords;
     } else if (typeof keywords === 'string') {
-      // مثلا کاربر میفرسته: "2, two, دو"
       keywordsArray = keywords.split(',').map((k) => k.trim());
     }
 
@@ -35,13 +36,14 @@ router.post('/', async (req, res) => {
     }
 
     const newTrigger = await Triggers.create({
-      app_userId: 'admin_test',
+      app_userId: 'admin_test', // یا req.user.id اگر میدل‌ویر دارید
       ig_accountId,
-      keywords: keywordsArray, // ذخیره آرایه
+      keywords: keywordsArray,
       flow_id,
       match_type: match_type || 'contains',
-      type: type || 'dm',
-      is_active: true,
+      type: type || 'both',
+      // *** ذخیره media_id ***
+      media_id: media_id || null, // اگر نبود نال بذار
     });
 
     res.json(newTrigger);
@@ -50,34 +52,12 @@ router.post('/', async (req, res) => {
   }
 });
 
-// 3. حذف تریگر
-router.delete('/:id', async (req, res) => {
-  try {
-    await Triggers.findByIdAndDelete(req.params.id);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// 4. فعال/غیرفعال کردن
-router.patch('/:id/toggle', async (req, res) => {
-  try {
-    const trigger = await Triggers.findById(req.params.id);
-    trigger.is_active = !trigger.is_active;
-    await trigger.save();
-    res.json(trigger);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ویرایش تریگر (PUT)
+// 3. ویرایش تریگر (PUT)
 router.put('/:id', async (req, res) => {
   try {
-    const { keywords, flow_id, match_type, type } = req.body;
+    // *** تغییر مهم: دریافت media_id در ویرایش ***
+    const { keywords, flow_id, match_type, type, media_id } = req.body;
 
-    // تبدیل کلمات کلیدی (اگر استرینگ بود به آرایه، اگر آرایه بود خودش)
     let keywordsArray = keywords;
     if (typeof keywords === 'string') {
       keywordsArray = keywords
@@ -93,10 +73,22 @@ router.put('/:id', async (req, res) => {
         flow_id,
         match_type,
         type,
+        // *** آپدیت media_id ***
+        media_id: media_id || null,
       },
       { new: true }
     );
     res.json(updatedTrigger);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 4. حذف تریگر
+router.delete('/:id', async (req, res) => {
+  try {
+    await Triggers.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

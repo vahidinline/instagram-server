@@ -53,6 +53,10 @@ router.post(
 
       if (file.mimetype === 'text/plain') {
         textContent = fs.readFileSync(file.path, 'utf8');
+        console.log('📄 File Content Preview:', textContent.substring(0, 50));
+        if (textContent.includes('')) {
+          console.warn('⚠️ Warning: File encoding might be wrong (Not UTF-8).');
+        }
         fileType = 'txt';
       } else {
         // فعلا PDF غیرفعال است طبق توافق قبلی

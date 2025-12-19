@@ -4,21 +4,22 @@ const TriggerSchema = new mongoose.Schema({
   app_userId: { type: String, required: true },
   ig_accountId: { type: String, required: true },
 
-  // *** تغییر اصلی: تبدیل String به [String] ***
   keywords: {
     type: [String],
     required: true,
-    // تابع ستتر برای اینکه مطمئن شویم همیشه حروف کوچک ذخیره می‌شوند
     set: (v) => v.map((k) => k.toLowerCase().trim()),
   },
 
   match_type: {
     type: String,
-    enum: ['exact', 'contains'], // شامل (contains) و دقیق (exact)
+    enum: ['exact', 'contains', 'starts_with'],
     default: 'contains',
   },
 
-  // اتصال به فلو (معماری جدید)
+  // *** تغییر جدید: محدود کردن تریگر به یک پست خاص ***
+  // اگر null باشد یعنی روی همه پست‌ها کار می‌کند
+  media_id: { type: String, default: null },
+
   flow_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Flows',

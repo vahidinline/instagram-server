@@ -33,6 +33,8 @@ const IGConnectionsSchema = new mongoose.Schema({
     activePersonaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Persona' },
     // جهت اطمینان (Fallback)، اگر پرسونا پاک شد، این متن بماند:
     systemPrompt: { type: String, default: 'You are a helpful assistant.' },
+    strictMode: { type: Boolean, default: false }, // پیش‌فرض خاموش (ترکیبی)
+    creativity: { type: Number, default: 0.5 },
   },
 
   created_at: { type: Date, default: Date.now },
