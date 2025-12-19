@@ -14,10 +14,10 @@ const GRAPH_URL = 'https://graph.instagram.com/v22.0';
  * 📨 پردازش پیام دایرکت (DM)
  */
 async function handleMessage(entry, messaging) {
-  // 1. جلوگیری از لوپ
+  // 1. جلوگیری از لوپ (پیام‌های اکو)
   if (messaging.message && messaging.message.is_echo) return;
 
-  const igAccountId = entry.id; // اکانت بیزینس
+  const igAccountId = entry.id; // اکانت بیزینس ما
   const senderId = messaging.sender.id; // مشتری
   const text = messaging.message?.text;
 
@@ -25,7 +25,7 @@ async function handleMessage(entry, messaging) {
 
   console.log(`📥 New Message from ${senderId}: ${text}`);
 
-  // 2. بررسی اشتراک
+  // 2. بررسی اشتراک و محدودیت (Gatekeeper)
   const quotaCheck = await subManager.checkLimit(igAccountId);
   if (!quotaCheck.allowed) {
     console.log(`⛔ Message Blocked: ${quotaCheck.reason}`);
@@ -50,71 +50,101 @@ async function handleMessage(entry, messaging) {
     };
     const aiConfig = connection.aiConfig || { enabled: false };
 
-    // 4. پروفایل و تحلیل CRM (همزمان برای سرعت)
+    // 4. دریافت پروفایل مشتری و استیج فعلی (برای CRM)
     let userInfo = {
       username: 'Instagram User',
       profile_picture: '',
       name: '',
     };
 
-    // تلاش برای گرفتن پروفایل (اگر قبلا کش نشده)
-    // در نسخه بهینه، اول از کاستومر دیتابیس میخوانیم
+    // جستجو در دیتابیس خودمان برای پیدا کردن مشتری قدیمی
     const existingCustomer = await Customer.findOne({
       ig_accountId: igAccountId,
       sender_id: senderId,
     });
+    const currentStage = existingCustomer ? existingCustomer.stage : 'lead'; // پیش‌فرض: سرنخ
 
     if (existingCustomer && existingCustomer.username) {
+      // اگر مشتری قدیمی است، از دیتای موجود استفاده کن (سرعت بالا)
       userInfo = {
         username: existingCustomer.username,
         name: existingCustomer.fullName,
         profile_picture: existingCustomer.profilePic,
       };
     } else if (token) {
+      // اگر مشتری جدید است، از اینستاگرام بگیر
       userInfo = await fetchUserProfile(senderId, igAccountId, token);
     }
 
-    // تحلیل احساسات (اگر کاربر پرو است)
-    let analysis = { sentiment: 'neutral', tags: [], score: 0 };
+    // ==================================================
+    // 5. تحلیل هوشمند CRM و پایپ‌لاین 📊
+    // ==================================================
+    let analysis = {
+      sentiment: 'neutral',
+      tags: [],
+      score: 0,
+      new_stage: null,
+    };
+
     const hasAiAccess = subManager.checkFeatureAccess(
       quotaCheck.subscription,
       'aiAccess'
     );
 
     if (hasAiAccess && text.length > 2) {
-      // این عملیات در پس‌زمینه انجام می‌شود تا بلاک نکند، اما منتظر نتیجه میمانیم
       try {
-        analysis = await azureService.analyzeMessage(text);
+        // ارسال استیج فعلی به AI تا تصمیم دقیق‌تر بگیرد
+        analysis = await azureService.analyzeMessage(text, currentStage);
+        console.log('🧠 CRM Analysis Result:', analysis);
       } catch (e) {
         console.error('CRM Analysis Failed');
       }
     }
 
-    // آپدیت پروفایل CRM
+    // آماده‌سازی آپدیت دیتابیس مشتری
+    let updateQuery = {
+      $set: {
+        username: userInfo.username,
+        fullName: userInfo.name,
+        profilePic: userInfo.profile_picture,
+        lastInteraction: new Date(),
+        sentimentLabel: analysis.sentiment,
+      },
+      $inc: {
+        interactionCount: 1,
+        leadScore: analysis.score > 0 ? Math.ceil(analysis.score / 10) : 0,
+      },
+      $addToSet: { tags: { $each: analysis.tags || [] } },
+    };
+
+    // *** لاجیک تغییر مرحله (Stage Change) ***
+    if (analysis.new_stage && analysis.new_stage !== currentStage) {
+      console.log(`🚀 Pipeline Move: ${currentStage} -> ${analysis.new_stage}`);
+      updateQuery.$set.stage = analysis.new_stage;
+
+      // ثبت در تاریخچه
+      updateQuery.$push = {
+        stageHistory: {
+          from: currentStage,
+          to: analysis.new_stage,
+          date: new Date(),
+          reason: `AI Analysis based on message: "${text.substring(0, 15)}..."`,
+        },
+      };
+    }
+
+    // اجرای آپدیت مشتری
     try {
       await Customer.findOneAndUpdate(
         { ig_accountId: igAccountId, sender_id: senderId },
-        {
-          $set: {
-            username: userInfo.username,
-            fullName: userInfo.name,
-            profilePic: userInfo.profile_picture,
-            lastInteraction: new Date(),
-            sentimentLabel: analysis.sentiment,
-          },
-          $inc: {
-            interactionCount: 1,
-            leadScore: analysis.score > 0 ? Math.ceil(analysis.score / 10) : 0,
-          },
-          $addToSet: { tags: { $each: analysis.tags || [] } },
-        },
+        updateQuery,
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
     } catch (e) {
       console.error('CRM DB Update Error:', e.message);
     }
 
-    // 5. ذخیره پیام ورودی
+    // 6. ذخیره پیام ورودی (با برچسب احساسات)
     const incomingLog = await MessageLog.create({
       ig_accountId: igAccountId,
       sender_id: senderId,
@@ -126,15 +156,15 @@ async function handleMessage(entry, messaging) {
       sentiment: analysis.sentiment,
     });
 
-    // ارسال به سوکت
+    // ارسال به سوکت (برای نمایش در اینباکس زنده)
     if (global.io) {
       global.io.to(igAccountId).emit('new_message', incomingLog);
     }
 
-    // 6. بررسی وضعیت ربات
+    // 7. بررسی وضعیت ربات
     if (botConfig.isActive === false) return;
 
-    // 7. جستجوی تریگر
+    // 8. جستجوی تریگر
     const trigger = await findMatchingTrigger(igAccountId, text, 'dm', null);
 
     if (trigger && trigger.flow_id) {
@@ -191,6 +221,7 @@ async function handleMessage(entry, messaging) {
             messageType = 'replied_ai';
           }
 
+          // ارسال پیام
           const sent = await sendReply(
             igAccountId,
             senderId,
@@ -205,7 +236,8 @@ async function handleMessage(entry, messaging) {
                 tokensUsed
               );
             } else {
-              await subManager.incrementUsage(quotaCheck.subscription._id);
+              if (messageType !== 'replied_ai')
+                await subManager.incrementUsage(quotaCheck.subscription._id);
             }
 
             const replyLog = await MessageLog.create({
@@ -230,7 +262,7 @@ async function handleMessage(entry, messaging) {
         await incomingLog.save();
       }
     }
-    // 8. هوش مصنوعی خالص
+    // 9. هوش مصنوعی خالص
     else if (aiConfig.enabled) {
       if (!hasAiAccess) return;
       const hasTokens = await subManager.checkAiLimit(quotaCheck.subscription);
@@ -286,7 +318,6 @@ async function handleMessage(entry, messaging) {
 
           if (global.io)
             global.io.to(igAccountId).emit('new_message', replyLog);
-
           incomingLog.status = 'processed_ai';
           await incomingLog.save();
         }
@@ -336,7 +367,7 @@ async function handleComment(entry, change) {
     const flow = await Flows.findById(trigger.flow_id);
 
     if (flow) {
-      // الف) ریپلای عمومی
+      // ریپلای عمومی
       if (botConfig.publicReplyText) {
         try {
           await axios.post(
@@ -351,7 +382,7 @@ async function handleComment(entry, change) {
         }
       }
 
-      // ب) دایرکت خصوصی
+      // دایرکت خصوصی
       let messageToSend = flow.messages[0].content;
       if (botConfig.checkFollow) {
         messageToSend = `${

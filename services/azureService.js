@@ -168,17 +168,31 @@ const azureService = {
    * تحلیل هوشمند پیام (CRM Intelligence)
    * خروجی JSON شامل احساسات، تگ‌ها و امتیاز
    */
-  analyzeMessage: async (text) => {
+  /**
+   * تحلیل هوشمند CRM (احساسات + تگ + مرحله فروش)
+   */
+  analyzeMessage: async (text, currentStage = 'lead') => {
     try {
       const systemPrompt = `
-      You are an AI analyst for a CRM system.
-      Analyze the user's message in Persian context.
+      You are a Sales AI Analyst.
+      Analyze the customer's message and determine their sales stage.
 
-      OUTPUT FORMAT (JSON ONLY):
+      CURRENT STAGE: "${currentStage}"
+
+      SALES STAGES RULES:
+      1. 'lead': Just started chatting, greeting.
+      2. 'interested': Asking about price, product details, availability.
+      3. 'negotiation': Asking for discount, comparing, complaining.
+      4. 'ready_to_buy': Asking for payment link, card number, giving phone number, saying "I want this".
+      5. 'customer': Sending proof of payment, saying "bought it".
+      6. 'churned': Explicitly saying "not interested", "too expensive", or very angry.
+
+      OUTPUT JSON ONLY:
       {
         "sentiment": "positive" | "neutral" | "negative",
-        "tags": ["Array of short keywords", "Max 3 tags"],
-        "score": Integer (0-100, where 100 is high purchase intent)
+        "tags": ["Tag1", "Tag2"],
+        "score": number (0-100),
+        "new_stage": "lead" | "interested" | "negotiation" | "ready_to_buy" | "customer" | "churned" (Return null if stage shouldn't change)
       }
       `;
 
@@ -188,14 +202,14 @@ const azureService = {
           { role: 'system', content: systemPrompt },
           { role: 'user', content: text },
         ],
-        temperature: 0.3,
+        temperature: 0.2, // دقت بالا
         response_format: { type: 'json_object' },
       });
 
       return JSON.parse(response.choices[0].message.content);
     } catch (e) {
       console.error('Analysis Error:', e.message);
-      return { sentiment: 'neutral', tags: [], score: 0 };
+      return { sentiment: 'neutral', tags: [], score: 0, new_stage: null };
     }
   },
 
