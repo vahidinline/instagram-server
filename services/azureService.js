@@ -4,7 +4,7 @@ const { SearchIndexClient, SearchClient } = require('@azure/search-documents');
 const crypto = require('crypto');
 const Lead = require('../models/Lead');
 
-console.log('🟢 AZURE SERVICE vFINAL - ALL FEATURES LOADED');
+console.log('🟢 AZURE SERVICE v9 - FULL MEMORY + CRM + LEAD SYSTEM LOADED');
 
 // --- CONFIGURATION ---
 const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
@@ -75,6 +75,7 @@ const azureService = {
       await searchIndexClient.getIndex(indexName);
     } catch (e) {
       console.log('⚠️ Index not found. Creating new index...');
+
       const indexObj = {
         name: indexName,
         fields: [
@@ -100,6 +101,7 @@ const azureService = {
           ],
         },
       };
+
       await searchIndexClient.createIndex(indexObj);
       console.log('✅ Azure Search Index Created.');
     }
@@ -127,6 +129,7 @@ const azureService = {
   addDocument: async (igAccountId, title, content) => {
     try {
       await azureService.ensureIndexExists();
+
       const vector = await azureService.getEmbedding(content);
       const docId = crypto.randomBytes(16).toString('hex');
 
@@ -166,33 +169,30 @@ const azureService = {
 
   /**
    * تحلیل هوشمند پیام (CRM Intelligence)
-   * خروجی JSON شامل احساسات، تگ‌ها و امتیاز
-   */
-  /**
-   * تحلیل هوشمند CRM (احساسات + تگ + مرحله فروش)
+   * تشخیص: احساسات، تگ‌ها، امتیاز و تغییر مرحله فروش
    */
   analyzeMessage: async (text, currentStage = 'lead') => {
     try {
       const systemPrompt = `
-      You are a Sales AI Analyst.
-      Analyze the customer's message and determine their sales stage.
+      You are an AI analyst for a CRM system.
+      Analyze the user's message in Persian context.
 
       CURRENT STAGE: "${currentStage}"
 
       SALES STAGES RULES:
       1. 'lead': Just started chatting, greeting.
-      2. 'interested': Asking about price, product details, availability.
-      3. 'negotiation': Asking for discount, comparing, complaining.
-      4. 'ready_to_buy': Asking for payment link, card number, giving phone number, saying "I want this".
-      5. 'customer': Sending proof of payment, saying "bought it".
-      6. 'churned': Explicitly saying "not interested", "too expensive", or very angry.
+      2. 'interested': Asking about price, product details.
+      3. 'negotiation': Asking for discount, comparing.
+      4. 'ready_to_buy': Asking for payment link, giving phone number.
+      5. 'customer': Sending proof of payment.
+      6. 'churned': Explicitly saying not interested or angry.
 
       OUTPUT JSON ONLY:
       {
         "sentiment": "positive" | "neutral" | "negative",
-        "tags": ["Tag1", "Tag2"],
-        "score": number (0-100),
-        "new_stage": "lead" | "interested" | "negotiation" | "ready_to_buy" | "customer" | "churned" (Return null if stage shouldn't change)
+        "tags": ["Array of short keywords", "Max 3 tags"],
+        "score": Integer (0-100, where 100 is high purchase intent),
+        "new_stage": "lead" | "interested" | "negotiation" | "ready_to_buy" | "customer" | "churned" (or null if no change)
       }
       `;
 
@@ -202,7 +202,7 @@ const azureService = {
           { role: 'system', content: systemPrompt },
           { role: 'user', content: text },
         ],
-        temperature: 0.2, // دقت بالا
+        temperature: 0.2,
         response_format: { type: 'json_object' },
       });
 
@@ -214,14 +214,15 @@ const azureService = {
   },
 
   /**
-   * جستجو و پاسخ هوشمند (RAG + Tools)
+   * جستجو و پاسخ هوشمند (RAG + Tools + Memory)
    */
   askAI: async (
     igAccountId,
     userQuery,
     systemInstruction = 'You are a helpful assistant.',
     senderData = {},
-    aiConfig = {}
+    aiConfig = {},
+    history = []
   ) => {
     try {
       // تنظیمات پیش‌فرض
@@ -251,33 +252,23 @@ const azureService = {
         context += `[Source: ${result.document.title}]\n${result.document.content}\n---\n`;
       }
 
-      if (!context) console.log('⚠️ No context found in KB.');
-
       // 4. ساخت دستورالعمل پویا
-      let promptLogic = '';
-      if (strictMode) {
-        promptLogic = `
-          INSTRUCTIONS:
-          1. Answer ONLY using the provided Context.
-          2. If the answer is NOT in the Context, you MUST say: "متاسفانه اطلاعاتی در این مورد در فایل‌های من نیست."
-          3. Do NOT use your own external knowledge.
-          `;
-      } else {
-        promptLogic = `
-          INSTRUCTIONS:
-          1. Use the provided Context as your primary source.
-          2. If the answer is not in the Context, use your general knowledge.
-          3. Prioritize the business information provided in the Context.
-          `;
-      }
+      let promptLogic = strictMode
+        ? `Answer ONLY using the provided Context. If not found, say "متاسفانه اطلاعاتی در این مورد در فایل‌های من نیست." Do NOT use external knowledge.`
+        : `Use the provided Context as your primary source. If answer is not in Context, use general knowledge politely.`;
 
       const finalSystemPrompt = `${systemInstruction}\n\n${promptLogic}\n\nCONTEXT FROM KNOWLEDGE BASE:\n${context}\n\nIMPORTANT: If the user provides a phone number, ALWAYS use the 'save_lead_info' tool.`;
 
-      // 5. ارسال به GPT
+      // 5. ساخت آرایه پیام‌ها (شامل تاریخچه)
       const messages = [
         { role: 'system', content: finalSystemPrompt },
+        ...history, // اضافه کردن حافظه چت
         { role: 'user', content: userQuery },
       ];
+
+      console.log(
+        `🧠 AI Context: ${history.length} previous messages included.`
+      );
 
       const response = await openai.chat.completions.create({
         model: chatDeployment,
@@ -312,7 +303,6 @@ const azureService = {
             console.log('⚠️ Lead save warning:', dbError.message);
           }
 
-          // ادامه مکالمه با GPT
           messages.push(message);
           messages.push({
             role: 'tool',
@@ -348,7 +338,7 @@ const azureService = {
   },
 
   /**
-   * چت ساده برای دمو (بدون RAG و Tools)
+   * چت ساده برای دمو
    */
   simpleChat: async (userMessage, systemPrompt) => {
     try {
@@ -364,7 +354,7 @@ const azureService = {
       return response.choices[0].message.content;
     } catch (e) {
       console.error('Simple Chat Error:', e.message);
-      return 'مشکلی در سرویس دمو پیش آمده. لطفا بعدا تلاش کنید.';
+      return 'مشکلی در سرویس دمو پیش آمده.';
     }
   },
 };

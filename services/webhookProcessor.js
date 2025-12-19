@@ -14,34 +14,29 @@ const GRAPH_URL = 'https://graph.instagram.com/v22.0';
  * 📨 پردازش پیام دایرکت (DM)
  */
 async function handleMessage(entry, messaging) {
-  // 1. جلوگیری از لوپ (پیام‌های اکو)
   if (messaging.message && messaging.message.is_echo) return;
 
-  const igAccountId = entry.id; // اکانت بیزینس ما
-  const senderId = messaging.sender.id; // مشتری
+  const igAccountId = entry.id;
+  const senderId = messaging.sender.id;
   const text = messaging.message?.text;
 
   if (!text) return;
 
   console.log(`📥 New Message from ${senderId}: ${text}`);
 
-  // 2. بررسی اشتراک و محدودیت (Gatekeeper)
+  // 1. بررسی اشتراک
   const quotaCheck = await subManager.checkLimit(igAccountId);
   if (!quotaCheck.allowed) {
-    console.log(`⛔ Message Blocked: ${quotaCheck.reason}`);
+    console.log(`⛔ Blocked: ${quotaCheck.reason}`);
     return;
   }
 
   try {
-    // 3. دریافت اطلاعات اکانت
+    // 2. دریافت اطلاعات اکانت
     const connection = await IGConnections.findOne({
       ig_userId: igAccountId,
     }).populate('aiConfig.activePersonaId');
-
-    if (!connection) {
-      console.error('❌ Connection not found in DB.');
-      return;
-    }
+    if (!connection) return;
 
     const token = connection.access_token;
     const botConfig = connection.botConfig || {
@@ -50,58 +45,49 @@ async function handleMessage(entry, messaging) {
     };
     const aiConfig = connection.aiConfig || { enabled: false };
 
-    // 4. دریافت پروفایل مشتری و استیج فعلی (برای CRM)
+    // 3. دریافت پروفایل (سریع)
     let userInfo = {
       username: 'Instagram User',
       profile_picture: '',
       name: '',
     };
-
-    // جستجو در دیتابیس خودمان برای پیدا کردن مشتری قدیمی
     const existingCustomer = await Customer.findOne({
       ig_accountId: igAccountId,
       sender_id: senderId,
     });
-    const currentStage = existingCustomer ? existingCustomer.stage : 'lead'; // پیش‌فرض: سرنخ
 
     if (existingCustomer && existingCustomer.username) {
-      // اگر مشتری قدیمی است، از دیتای موجود استفاده کن (سرعت بالا)
       userInfo = {
         username: existingCustomer.username,
         name: existingCustomer.fullName,
         profile_picture: existingCustomer.profilePic,
       };
     } else if (token) {
-      // اگر مشتری جدید است، از اینستاگرام بگیر
       userInfo = await fetchUserProfile(senderId, igAccountId, token);
     }
 
-    // ==================================================
-    // 5. تحلیل هوشمند CRM و پایپ‌لاین 📊
-    // ==================================================
+    // 4. تحلیل هوشمند CRM (در صورت دسترسی)
     let analysis = {
       sentiment: 'neutral',
       tags: [],
       score: 0,
       new_stage: null,
     };
-
     const hasAiAccess = subManager.checkFeatureAccess(
       quotaCheck.subscription,
       'aiAccess'
     );
+    const currentStage = existingCustomer ? existingCustomer.stage : 'lead';
 
     if (hasAiAccess && text.length > 2) {
       try {
-        // ارسال استیج فعلی به AI تا تصمیم دقیق‌تر بگیرد
         analysis = await azureService.analyzeMessage(text, currentStage);
-        console.log('🧠 CRM Analysis Result:', analysis);
       } catch (e) {
-        console.error('CRM Analysis Failed');
+        console.error('CRM Analysis Fail');
       }
     }
 
-    // آماده‌سازی آپدیت دیتابیس مشتری
+    // آپدیت دیتابیس مشتری (CRM)
     let updateQuery = {
       $set: {
         username: userInfo.username,
@@ -117,34 +103,26 @@ async function handleMessage(entry, messaging) {
       $addToSet: { tags: { $each: analysis.tags || [] } },
     };
 
-    // *** لاجیک تغییر مرحله (Stage Change) ***
     if (analysis.new_stage && analysis.new_stage !== currentStage) {
-      console.log(`🚀 Pipeline Move: ${currentStage} -> ${analysis.new_stage}`);
+      console.log(`🚀 Stage Change: ${currentStage} -> ${analysis.new_stage}`);
       updateQuery.$set.stage = analysis.new_stage;
-
-      // ثبت در تاریخچه
       updateQuery.$push = {
         stageHistory: {
           from: currentStage,
           to: analysis.new_stage,
           date: new Date(),
-          reason: `AI Analysis based on message: "${text.substring(0, 15)}..."`,
+          reason: 'AI Auto-Move',
         },
       };
     }
 
-    // اجرای آپدیت مشتری
-    try {
-      await Customer.findOneAndUpdate(
-        { ig_accountId: igAccountId, sender_id: senderId },
-        updateQuery,
-        { upsert: true, new: true, setDefaultsOnInsert: true }
-      );
-    } catch (e) {
-      console.error('CRM DB Update Error:', e.message);
-    }
+    await Customer.findOneAndUpdate(
+      { ig_accountId: igAccountId, sender_id: senderId },
+      updateQuery,
+      { upsert: true, new: true }
+    );
 
-    // 6. ذخیره پیام ورودی (با برچسب احساسات)
+    // 5. ذخیره پیام ورودی
     const incomingLog = await MessageLog.create({
       ig_accountId: igAccountId,
       sender_id: senderId,
@@ -156,15 +134,11 @@ async function handleMessage(entry, messaging) {
       sentiment: analysis.sentiment,
     });
 
-    // ارسال به سوکت (برای نمایش در اینباکس زنده)
-    if (global.io) {
-      global.io.to(igAccountId).emit('new_message', incomingLog);
-    }
+    if (global.io) global.io.to(igAccountId).emit('new_message', incomingLog);
 
-    // 7. بررسی وضعیت ربات
     if (botConfig.isActive === false) return;
 
-    // 8. جستجوی تریگر
+    // 6. تریگرها
     const trigger = await findMatchingTrigger(igAccountId, text, 'dm', null);
 
     if (trigger && trigger.flow_id) {
@@ -172,18 +146,16 @@ async function handleMessage(entry, messaging) {
       const flow = await Flows.findById(trigger.flow_id);
 
       if (flow) {
-        if (botConfig.responseDelay > 0) {
+        if (botConfig.responseDelay > 0)
           await new Promise((r) =>
             setTimeout(r, botConfig.responseDelay * 1000)
           );
-        }
 
         for (const msg of flow.messages) {
           let contentToSend = msg.content;
           let messageType = 'replied';
-          let tokensUsed = 0;
 
-          // فلوهای ترکیبی (Hybrid AI)
+          // فلوهای ترکیبی (AI in Flow)
           if (msg.type === 'ai_response') {
             if (!hasAiAccess) continue;
             const hasTokens = await subManager.checkAiLimit(
@@ -191,7 +163,6 @@ async function handleMessage(entry, messaging) {
             );
             if (!hasTokens) continue;
 
-            // تعیین پرامپت
             let systemPrompt =
               aiConfig.activePersonaId?.systemPrompt ||
               aiConfig.systemPrompt ||
@@ -199,46 +170,47 @@ async function handleMessage(entry, messaging) {
             const hybridPrompt = msg.content
               ? `${systemPrompt}\n\nTask: ${msg.content}`
               : systemPrompt;
-
             const senderData = {
               id: senderId,
               username: userInfo.username,
               fullname: userInfo.name,
             };
 
+            // دریافت تاریخچه
+            const history = await getChatHistory(
+              igAccountId,
+              senderId,
+              incomingLog._id
+            );
+
             const aiResult = await azureService.askAI(
               igAccountId,
               text,
               hybridPrompt,
               senderData,
-              aiConfig
+              aiConfig,
+              history
             );
-
-            if (!aiResult || !aiResult.content) continue;
+            if (!aiResult?.content) continue;
 
             contentToSend = aiResult.content;
-            tokensUsed = aiResult.usage?.total_tokens || 0;
+            if (aiResult.usage?.total_tokens)
+              await subManager.incrementAiUsage(
+                quotaCheck.subscription._id,
+                aiResult.usage.total_tokens
+              );
             messageType = 'replied_ai';
           }
 
-          // ارسال پیام
           const sent = await sendReply(
             igAccountId,
             senderId,
             { ...msg._doc, content: contentToSend },
             token
           );
-
           if (sent) {
-            if (tokensUsed > 0) {
-              await subManager.incrementAiUsage(
-                quotaCheck.subscription._id,
-                tokensUsed
-              );
-            } else {
-              if (messageType !== 'replied_ai')
-                await subManager.incrementUsage(quotaCheck.subscription._id);
-            }
+            if (messageType !== 'replied_ai')
+              await subManager.incrementUsage(quotaCheck.subscription._id);
 
             const replyLog = await MessageLog.create({
               ig_accountId: igAccountId,
@@ -250,7 +222,6 @@ async function handleMessage(entry, messaging) {
               status: messageType,
               triggered_by: trigger._id,
             });
-
             if (global.io)
               global.io.to(igAccountId).emit('new_message', replyLog);
           }
@@ -262,16 +233,14 @@ async function handleMessage(entry, messaging) {
         await incomingLog.save();
       }
     }
-    // 9. هوش مصنوعی خالص
+
+    // 7. هوش مصنوعی خالص (با حافظه)
     else if (aiConfig.enabled) {
       if (!hasAiAccess) return;
       const hasTokens = await subManager.checkAiLimit(quotaCheck.subscription);
-      if (!hasTokens) {
-        console.log('⛔ AI Token Limit Reached.');
-        return;
-      }
+      if (!hasTokens) return;
 
-      console.log('🤖 Asking AI...');
+      console.log('🤖 Asking AI with Memory...');
 
       let systemPrompt =
         aiConfig.activePersonaId?.systemPrompt ||
@@ -283,12 +252,20 @@ async function handleMessage(entry, messaging) {
         fullname: userInfo.name,
       };
 
+      // دریافت تاریخچه چت (۱۰ پیام آخر)
+      const history = await getChatHistory(
+        igAccountId,
+        senderId,
+        incomingLog._id
+      );
+
       const aiResult = await azureService.askAI(
         igAccountId,
         text,
         systemPrompt,
         senderData,
-        aiConfig
+        aiConfig,
+        history // ارسال تاریخچه
       );
 
       if (aiResult && aiResult.content) {
@@ -329,105 +306,29 @@ async function handleMessage(entry, messaging) {
 }
 
 /**
- * 💬 پردازش کامنت
+ * دریافت تاریخچه چت برای کانتکست AI
  */
-async function handleComment(entry, change) {
-  const igAccountId = entry.id;
-  const comment = change.value;
-  const text = comment.text;
-  const commentId = comment.id;
-  const senderId = comment.from?.id;
-  const senderUsername = comment.from?.username;
+async function getChatHistory(igAccountId, senderId, currentMsgId) {
+  try {
+    const logs = await MessageLog.find({
+      ig_accountId,
+      sender_id: senderId,
+      _id: { $ne: currentMsgId }, // پیام فعلی را نادیده بگیر
+    })
+      .sort({ created_at: -1 })
+      .limit(6); // ۶ پیام آخر
 
-  const mediaId = comment.media?.id;
-
-  if (!text || !senderId) return;
-
-  const connection = await IGConnections.findOne({ ig_userId: igAccountId });
-  if (!connection) return;
-
-  if (senderUsername === connection.username) return;
-
-  console.log(`💬 Comment from @${senderUsername}: ${text}`);
-
-  const quotaCheck = await subManager.checkLimit(igAccountId);
-  if (!quotaCheck.allowed) return;
-
-  const token = connection.access_token;
-  const botConfig = connection.botConfig || {};
-
-  const trigger = await findMatchingTrigger(
-    igAccountId,
-    text,
-    'comment',
-    mediaId
-  );
-
-  if (trigger && trigger.flow_id) {
-    const flow = await Flows.findById(trigger.flow_id);
-
-    if (flow) {
-      // ریپلای عمومی
-      if (botConfig.publicReplyText) {
-        try {
-          await axios.post(
-            `${GRAPH_URL}/${commentId}/replies`,
-            {
-              message: botConfig.publicReplyText,
-            },
-            { params: { access_token: token } }
-          );
-        } catch (e) {
-          console.error('Public Reply Error');
-        }
-      }
-
-      // دایرکت خصوصی
-      let messageToSend = flow.messages[0].content;
-      if (botConfig.checkFollow) {
-        messageToSend = `${
-          botConfig.followWarning || 'لطفا پیج را فالو کنید'
-        }\n\n👇👇👇\n${messageToSend}`;
-      }
-
-      if (flow.messages[0].buttons && flow.messages[0].buttons.length > 0) {
-        messageToSend +=
-          '\n\n🔗 لینک‌ها:\n' +
-          flow.messages[0].buttons
-            .map((b) => `${b.title}: ${b.url}`)
-            .join('\n');
-      }
-
-      try {
-        await axios.post(
-          `${GRAPH_URL}/me/messages`,
-          {
-            recipient: { comment_id: commentId },
-            message: { text: messageToSend },
-          },
-          { params: { access_token: token } }
-        );
-
-        console.log('✅ Private Reply Sent.');
-        await subManager.incrementUsage(quotaCheck.subscription._id);
-
-        await MessageLog.create({
-          ig_accountId: igAccountId,
-          sender_id: senderId,
-          sender_username: senderUsername,
-          content: messageToSend,
-          direction: 'outgoing',
-          status: 'replied_comment',
-          triggered_by: trigger._id,
-        });
-      } catch (e) {
-        console.error('❌ Private Reply Error:', e.response?.data || e.message);
-      }
-    }
+    return logs.reverse().map((log) => ({
+      role: log.direction === 'incoming' ? 'user' : 'assistant',
+      content: log.content,
+    }));
+  } catch (e) {
+    console.error('History Error:', e.message);
+    return [];
   }
 }
 
-// --- توابع کمکی ---
+// ... (بقیه توابع کمکی: fetchUserProfile, findMatchingTrigger, sendReply, handleComment) ...
 
 async function fetchUserProfile(senderId, myIgId, token) {
   try {
@@ -515,6 +416,100 @@ async function sendReply(myId, recipientId, messageData, token) {
   } catch (e) {
     console.error('❌ Send Error:', e.response?.data || e.message);
     return false;
+  }
+}
+
+async function handleComment(entry, change) {
+  const igAccountId = entry.id;
+  const comment = change.value;
+  const text = comment.text;
+  const commentId = comment.id;
+  const senderId = comment.from?.id;
+  const senderUsername = comment.from?.username;
+
+  const mediaId = comment.media?.id;
+
+  if (!text || !senderId) return;
+
+  const connection = await IGConnections.findOne({ ig_userId: igAccountId });
+  if (!connection) return;
+
+  if (senderUsername === connection.username) return;
+
+  console.log(`💬 Comment from @${senderUsername}: ${text}`);
+
+  const quotaCheck = await subManager.checkLimit(igAccountId);
+  if (!quotaCheck.allowed) return;
+
+  const token = connection.access_token;
+  const botConfig = connection.botConfig || {};
+
+  const trigger = await findMatchingTrigger(
+    igAccountId,
+    text,
+    'comment',
+    mediaId
+  );
+
+  if (trigger && trigger.flow_id) {
+    const flow = await Flows.findById(trigger.flow_id);
+
+    if (flow) {
+      if (botConfig.publicReplyText) {
+        try {
+          await axios.post(
+            `${GRAPH_URL}/${commentId}/replies`,
+            {
+              message: botConfig.publicReplyText,
+            },
+            { params: { access_token: token } }
+          );
+        } catch (e) {
+          console.error('Public Reply Error');
+        }
+      }
+
+      let messageToSend = flow.messages[0].content;
+      if (botConfig.checkFollow) {
+        messageToSend = `${
+          botConfig.followWarning || 'لطفا پیج را فالو کنید'
+        }\n\n👇👇👇\n${messageToSend}`;
+      }
+
+      if (flow.messages[0].buttons && flow.messages[0].buttons.length > 0) {
+        messageToSend +=
+          '\n\n🔗 لینک‌ها:\n' +
+          flow.messages[0].buttons
+            .map((b) => `${b.title}: ${b.url}`)
+            .join('\n');
+      }
+
+      try {
+        await axios.post(
+          `${GRAPH_URL}/me/messages`,
+          {
+            recipient: { comment_id: commentId },
+            message: { text: messageToSend },
+          },
+          { params: { access_token: token } }
+        );
+
+        console.log('✅ Private Reply Sent.');
+        await subManager.incrementUsage(quotaCheck.subscription._id);
+
+        await MessageLog.create({
+          ig_accountId: igAccountId,
+          sender_id: senderId,
+          sender_username: senderUsername,
+          content: messageToSend,
+          direction: 'outgoing',
+          status: 'replied_comment',
+          triggered_by: trigger._id,
+        });
+      } catch (e) {
+        console.error('❌ Private Reply Error:', e.response?.data || e.message);
+      }
+    }
   }
 }
 
