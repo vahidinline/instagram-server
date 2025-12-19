@@ -122,6 +122,8 @@ app.get('/', (req, res) => res.send('Server is Running 🚀'));
 app.use('/api/personas', require('./routes/personas'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/demo', require('./routes/demo'));
+app.use('/api/crm', require('./routes/crm'));
+
 server.listen(app.get('port'), () => {
   console.log(`🚀 Server listening on port ${app.get('port')}`);
 });
