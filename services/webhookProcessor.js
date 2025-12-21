@@ -412,23 +412,35 @@ async function findMatchingTrigger(igAccountId, text, type, mediaId = null) {
 
 async function sendReply(myId, recipientId, messageData, token) {
   try {
-    let payload = { recipient: { id: recipientId }, message: {} };
+    console.log(`📤 Sending Reply Type: ${messageData.type}`); // لاگ برای اطمینان
+
+    // شروع با پیام خالی (بدون پیش‌فرض متن)
+    let payload = {
+      recipient: { id: recipientId },
+      message: {},
+    };
 
     switch (messageData.type) {
       case 'text':
       case 'ai_response':
+        // اگر متن بود، چک میکنیم دکمه دارد یا نه
         if (messageData.buttons && messageData.buttons.length > 0) {
           payload.message = {
             attachment: {
               type: 'template',
               payload: {
                 template_type: 'button',
-                text: messageData.content,
-                buttons: messageData.buttons,
+                text: messageData.content || 'گزینه‌ها:', // متن اجباری است
+                buttons: messageData.buttons.map((btn) => ({
+                  type: 'web_url',
+                  url: btn.url,
+                  title: btn.title,
+                })),
               },
             },
           };
         } else {
+          // متن ساده
           payload.message = { text: messageData.content };
         }
         break;
@@ -436,15 +448,24 @@ async function sendReply(myId, recipientId, messageData, token) {
       case 'image':
       case 'video':
       case 'audio':
+        // مدیا
         payload.message = {
           attachment: {
             type: messageData.type,
-            payload: { url: messageData.media_url, is_reusable: true },
+            payload: {
+              url: messageData.media_url,
+              is_reusable: true,
+            },
           },
         };
         break;
 
-      case 'card':
+      case 'card': // کاروسل (Generic Template)
+        if (!messageData.cards || messageData.cards.length === 0) {
+          console.error('❌ Carousel has no cards!');
+          return false;
+        }
+
         payload.message = {
           attachment: {
             type: 'template',
@@ -452,24 +473,48 @@ async function sendReply(myId, recipientId, messageData, token) {
               template_type: 'generic',
               elements: messageData.cards.map((c) => ({
                 title: c.title,
-                subtitle: c.subtitle,
+                subtitle: c.subtitle || '',
                 image_url: c.image_url,
-                default_action: { type: 'web_url', url: c.default_action_url },
-                buttons: c.buttons,
+                default_action: {
+                  type: 'web_url',
+                  url:
+                    c.default_action_url ||
+                    c.buttons?.[0]?.url ||
+                    'https://instagram.com',
+                },
+                buttons:
+                  c.buttons && c.buttons.length > 0
+                    ? c.buttons.map((btn) => ({
+                        type: 'web_url',
+                        url: btn.url,
+                        title: btn.title,
+                      }))
+                    : undefined,
               })),
             },
           },
         };
         break;
+
+      default:
+        // فال‌بک به متن
+        payload.message = { text: messageData.content || '...' };
     }
 
     await axios.post(`${GRAPH_URL}/me/messages`, payload, {
       params: { access_token: token },
     });
-    console.log('✅ Reply Sent.');
+    console.log('✅ Reply Sent Successfully.');
     return true;
   } catch (e) {
     console.error('❌ Send Error:', e.response?.data || e.message);
+    // لاگ دقیق‌تر برای دیباگ متا
+    if (e.response?.data?.error) {
+      console.error(
+        'Meta API Error Detail:',
+        JSON.stringify(e.response.data.error, null, 2)
+      );
+    }
     return false;
   }
 }
