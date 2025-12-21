@@ -4,7 +4,7 @@ const { SearchIndexClient, SearchClient } = require('@azure/search-documents');
 const crypto = require('crypto');
 const Lead = require('../models/Lead');
 
-console.log('🟢 AZURE SERVICE v9 - FULL MEMORY + CRM + LEAD SYSTEM LOADED');
+console.log('🟢 AZURE SERVICE v10 - AGENTIC MODE (FLOW TRIGGERING) LOADED');
 
 // --- CONFIGURATION ---
 const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
@@ -39,14 +39,14 @@ const searchClient = new SearchClient(
   new AzureKeyCredential(searchKey)
 );
 
-// 3. تعریف ابزارها (Tools)
-const tools = [
+// 3. ابزارهای پایه (لید)
+const baseTools = [
   {
     type: 'function',
     function: {
       name: 'save_lead_info',
       description:
-        'Extract and save user contact information (Lead) when provided in the chat.',
+        'Extract and save user contact information (Lead) when provided.',
       parameters: {
         type: 'object',
         properties: {
@@ -54,11 +54,8 @@ const tools = [
             type: 'string',
             description: 'User phone number (e.g., 0912...)',
           },
-          name: { type: 'string', description: "User's name if provided" },
-          product: {
-            type: 'string',
-            description: 'Product or service the user is interested in',
-          },
+          name: { type: 'string', description: "User's name" },
+          product: { type: 'string', description: 'Interest product' },
         },
         required: ['phone'],
       },
@@ -67,15 +64,11 @@ const tools = [
 ];
 
 const azureService = {
-  /**
-   * اطمینان از وجود ایندکس در آژور سرچ
-   */
   ensureIndexExists: async () => {
     try {
       await searchIndexClient.getIndex(indexName);
     } catch (e) {
       console.log('⚠️ Index not found. Creating new index...');
-
       const indexObj = {
         name: indexName,
         fields: [
@@ -101,15 +94,10 @@ const azureService = {
           ],
         },
       };
-
       await searchIndexClient.createIndex(indexObj);
-      console.log('✅ Azure Search Index Created.');
     }
   },
 
-  /**
-   * تبدیل متن به وکتور (Embedding)
-   */
   getEmbedding: async (text) => {
     try {
       const response = await openai.embeddings.create({
@@ -123,26 +111,20 @@ const azureService = {
     }
   },
 
-  /**
-   * افزودن سند به پایگاه دانش
-   */
   addDocument: async (igAccountId, title, content) => {
     try {
       await azureService.ensureIndexExists();
-
       const vector = await azureService.getEmbedding(content);
       const docId = crypto.randomBytes(16).toString('hex');
-
       const documents = [
         {
           id: docId,
-          content: content,
-          title: title,
+          content,
+          title,
           ig_accountId: igAccountId,
           contentVector: vector,
         },
       ];
-
       await searchClient.uploadDocuments(documents);
       console.log(`✅ Document indexed for ${igAccountId}`);
       return docId;
@@ -152,50 +134,30 @@ const azureService = {
     }
   },
 
-  /**
-   * حذف سند
-   */
   deleteDocument: async (docId) => {
     try {
       const documents = [{ id: docId, '@search.action': 'delete' }];
       await searchClient.uploadDocuments(documents);
-      console.log(`🗑️ Document ${docId} deleted from Azure.`);
       return true;
     } catch (e) {
-      console.error('Azure Delete Error:', e.message);
       return false;
     }
   },
 
-  /**
-   * تحلیل هوشمند پیام (CRM Intelligence)
-   * تشخیص: احساسات، تگ‌ها، امتیاز و تغییر مرحله فروش
-   */
   analyzeMessage: async (text, currentStage = 'lead') => {
     try {
       const systemPrompt = `
-      You are an AI analyst for a CRM system.
-      Analyze the user's message in Persian context.
-
+      You are an AI analyst for a CRM system. Analyze the message in Persian.
       CURRENT STAGE: "${currentStage}"
-
-      SALES STAGES RULES:
-      1. 'lead': Just started chatting, greeting.
-      2. 'interested': Asking about price, product details.
-      3. 'negotiation': Asking for discount, comparing.
-      4. 'ready_to_buy': Asking for payment link, giving phone number.
-      5. 'customer': Sending proof of payment.
-      6. 'churned': Explicitly saying not interested or angry.
-
+      SALES STAGES: lead, interested, negotiation, ready_to_buy, customer, churned.
       OUTPUT JSON ONLY:
       {
         "sentiment": "positive" | "neutral" | "negative",
-        "tags": ["Array of short keywords", "Max 3 tags"],
-        "score": Integer (0-100, where 100 is high purchase intent),
-        "new_stage": "lead" | "interested" | "negotiation" | "ready_to_buy" | "customer" | "churned" (or null if no change)
+        "tags": ["Tag1", "Tag2"],
+        "score": number (0-100),
+        "new_stage": "stage_name" | null
       }
       `;
-
       const response = await openai.chat.completions.create({
         model: chatDeployment,
         messages: [
@@ -205,34 +167,55 @@ const azureService = {
         temperature: 0.2,
         response_format: { type: 'json_object' },
       });
-
       return JSON.parse(response.choices[0].message.content);
     } catch (e) {
-      console.error('Analysis Error:', e.message);
       return { sentiment: 'neutral', tags: [], score: 0, new_stage: null };
     }
   },
 
   /**
-   * جستجو و پاسخ هوشمند (RAG + Tools + Memory)
+   * جستجو و پاسخ هوشمند (با قابلیت اجرای فلو)
    */
   askAI: async (
     igAccountId,
     userQuery,
-    systemInstruction = 'You are a helpful assistant.',
+    systemInstruction,
     senderData = {},
     aiConfig = {},
-    history = []
+    history = [],
+    availableFlows = []
   ) => {
     try {
-      // تنظیمات پیش‌فرض
       const strictMode = aiConfig.strictMode ?? false;
       const temperature = aiConfig.creativity ?? 0.5;
 
-      // 1. وکتور کردن سوال
-      const queryVector = await azureService.getEmbedding(userQuery);
+      // 1. آماده‌سازی ابزارها (اضافه کردن فلوها)
+      let dynamicTools = [...baseTools];
+      if (availableFlows.length > 0) {
+        dynamicTools.push({
+          type: 'function',
+          function: {
+            name: 'trigger_flow',
+            description: `Use this tool ONLY if the user asks for something that matches one of these flows: [${availableFlows
+              .map((f) => f.name)
+              .join(', ')}]`,
+            parameters: {
+              type: 'object',
+              properties: {
+                flow_name: {
+                  type: 'string',
+                  enum: availableFlows.map((f) => f.name),
+                  description: 'The exact name of the flow to trigger',
+                },
+              },
+              required: ['flow_name'],
+            },
+          },
+        });
+      }
 
-      // 2. جستجو در آژور سرچ
+      // 2. RAG
+      const queryVector = await azureService.getEmbedding(userQuery);
       const searchResults = await searchClient.search(userQuery, {
         vectorQueries: [
           {
@@ -246,82 +229,72 @@ const azureService = {
         select: ['content', 'title'],
       });
 
-      // 3. ساخت کانتکست
       let context = '';
-      for await (const result of searchResults.results) {
-        context += `[Source: ${result.document.title}]\n${result.document.content}\n---\n`;
-      }
+      for await (const result of searchResults.results)
+        context += result.document.content + '\n---\n';
 
-      // 4. ساخت دستورالعمل پویا
       let promptLogic = strictMode
-        ? `Answer ONLY using the provided Context. If not found, say "متاسفانه اطلاعاتی در این مورد در فایل‌های من نیست." Do NOT use external knowledge.`
-        : `Use the provided Context as your primary source. If answer is not in Context, use general knowledge politely.`;
+        ? 'Answer ONLY using the provided Context.'
+        : 'Use Context as primary source. Use general knowledge if needed.';
 
-      const finalSystemPrompt = `${systemInstruction}\n\n${promptLogic}\n\nCONTEXT FROM KNOWLEDGE BASE:\n${context}\n\nIMPORTANT: If the user provides a phone number, ALWAYS use the 'save_lead_info' tool.`;
+      const finalSystemPrompt = `${systemInstruction}\n\n${promptLogic}\n\nCONTEXT:\n${context}\n\nIMPORTANT: If user gives phone, use 'save_lead_info'. If user asks for specific content available in flows, use 'trigger_flow'.`;
 
-      // 5. ساخت آرایه پیام‌ها (شامل تاریخچه)
       const messages = [
         { role: 'system', content: finalSystemPrompt },
-        ...history, // اضافه کردن حافظه چت
+        ...history,
         { role: 'user', content: userQuery },
       ];
 
-      console.log(
-        `🧠 AI Context: ${history.length} previous messages included.`
-      );
-
+      // 3. درخواست GPT
       const response = await openai.chat.completions.create({
         model: chatDeployment,
         messages: messages,
         temperature: temperature,
-        tools: tools,
+        tools: dynamicTools,
         tool_choice: 'auto',
       });
 
       const choice = response.choices[0];
       const message = choice.message;
 
-      // 6. هندل کردن Tool Calls (Lead Generation)
+      // 4. هندل کردن ابزارها
       if (message.tool_calls && message.tool_calls.length > 0) {
         const toolCall = message.tool_calls[0];
+        const args = JSON.parse(toolCall.function.arguments);
 
+        // الف: لید
         if (toolCall.function.name === 'save_lead_info') {
-          const args = JSON.parse(toolCall.function.arguments);
-          console.log('🎣 Lead Captured:', args);
-
           try {
             await Lead.create({
-              ig_accountId: igAccountId,
-              instagram_user_id: senderData.id || 'unknown',
-              instagram_username: senderData.username || 'unknown',
-              instagram_fullname: senderData.fullname || '',
+              ig_accountId,
               phone: args.phone,
-              extracted_name: args.name,
-              interest_product: args.product,
+              ...senderData,
             });
-          } catch (dbError) {
-            console.log('⚠️ Lead save warning:', dbError.message);
-          }
-
+          } catch (e) {}
           messages.push(message);
           messages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
-            content: JSON.stringify({
-              success: true,
-              message: 'Lead saved successfully.',
-            }),
+            content: JSON.stringify({ success: true }),
           });
-
-          const finalResponse = await openai.chat.completions.create({
+          const finalRes = await openai.chat.completions.create({
             model: chatDeployment,
-            messages: messages,
+            messages,
           });
-
           return {
-            content: finalResponse.choices[0].message.content,
-            usage: finalResponse.usage,
+            content: finalRes.choices[0].message.content,
+            usage: finalRes.usage,
             leadCaptured: true,
+          };
+        }
+
+        // ب: اجرای فلو (جدید)
+        else if (toolCall.function.name === 'trigger_flow') {
+          console.log(`🤖 AI Triggering Flow: ${args.flow_name}`);
+          return {
+            action: 'trigger_flow',
+            flowName: args.flow_name,
+            usage: response.usage,
           };
         }
       }
@@ -332,14 +305,11 @@ const azureService = {
         leadCaptured: false,
       };
     } catch (e) {
-      console.error('AI Generation Error:', e.message);
+      console.error('AI Error:', e.message);
       return null;
     }
   },
 
-  /**
-   * چت ساده برای دمو
-   */
   simpleChat: async (userMessage, systemPrompt) => {
     try {
       const response = await openai.chat.completions.create({
@@ -350,11 +320,9 @@ const azureService = {
         ],
         temperature: 0.7,
       });
-
       return response.choices[0].message.content;
     } catch (e) {
-      console.error('Simple Chat Error:', e.message);
-      return 'مشکلی در سرویس دمو پیش آمده.';
+      return 'Error in demo chat.';
     }
   },
 };

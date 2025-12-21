@@ -1,15 +1,14 @@
 /**
- * Main Server File - FINAL PRODUCTION VERSION (Crypto Patched)
+ * Main Server File - FINAL INTEGRATED VERSION
  */
 
 require('dotenv').config();
 
-// *** پچ حیاتی برای حل مشکل کتابخانه‌های هوش مصنوعی ***
+// *** پچ سراسری برای کریپتو (حل مشکل کتابخانه‌های هوش مصنوعی) ***
 const crypto = require('crypto');
 if (!global.crypto) {
   global.crypto = crypto;
 }
-// ****************************************************
 
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -63,6 +62,10 @@ const inboxRoutes = require('./routes/inbox');
 const paymentRoutes = require('./routes/payment');
 const knowledgeRoutes = require('./routes/knowledge');
 const leadsRoutes = require('./routes/leads');
+const personaRoutes = require('./routes/personas');
+const demoRoutes = require('./routes/demo');
+const mediaRoutes = require('./routes/media'); // <--- ✅ اضافه شد (مدیا)
+
 // --- API ENDPOINTS ---
 app.use('/api/auth', userAuthRoutes);
 app.use('/auth', instagramAuthRoutes);
@@ -74,6 +77,10 @@ app.use('/api/inbox', inboxRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/knowledge', knowledgeRoutes);
 app.use('/api/leads', leadsRoutes);
+app.use('/api/personas', personaRoutes);
+app.use('/api/demo', demoRoutes);
+app.use('/api/media', mediaRoutes); // <--- ✅ اضافه شد (فعال‌سازی مسیر آپلود)
+
 // --- WEBHOOK VERIFICATION ---
 app.get('/instagram', function (req, res) {
   if (
@@ -119,10 +126,6 @@ io.on('connection', (socket) => {
 });
 
 app.get('/', (req, res) => res.send('Server is Running 🚀'));
-app.use('/api/personas', require('./routes/personas'));
-app.use('/api/admin', require('./routes/admin'));
-app.use('/api/demo', require('./routes/demo'));
-app.use('/api/crm', require('./routes/crm'));
 
 server.listen(app.get('port'), () => {
   console.log(`🚀 Server listening on port ${app.get('port')}`);

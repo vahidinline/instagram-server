@@ -6,28 +6,41 @@ const FlowSchema = new mongoose.Schema({
 
   messages: [
     {
-      type: { type: String, enum: ['text', 'image', 'card'], default: 'text' },
-      content: { type: String, required: true }, // متن اصلی
-
-      // *** اضافه شد: دکمه‌ها (فقط برای دایرکت) ***
-      buttons: [
-        {
-          title: { type: String, required: true }, // متن دکمه (مثلا: خرید)
-          url: { type: String, required: true }, // لینک سایت
-          type: { type: String, default: 'web_url' }, // فعلا فقط لینک وب
-        },
-      ],
-    },
-  ],
-  messages: [
-    {
+      // انواع پیام گسترش یافت
       type: {
         type: String,
-        enum: ['text', 'image', 'card', 'ai_response'],
+        enum: ['text', 'image', 'video', 'audio', 'card', 'ai_response'],
         default: 'text',
       },
-      content: { type: String }, // اگر ai_response باشد، این فیلد می‌تواند خالی باشد یا "دستور خاص" برای AI باشد
-      // ... buttons ...
+
+      content: { type: String }, // متن (برای text/ai) یا کپشن
+      media_url: { type: String }, // لینک فایل (برای image/video/audio)
+
+      // دکمه‌ها (برای text/image/video)
+      buttons: [
+        {
+          title: { type: String },
+          url: { type: String },
+          type: { type: String, default: 'web_url' },
+        },
+      ],
+
+      // *** جدید: مخصوص کاروسل (Card/Generic Template) ***
+      cards: [
+        {
+          title: { type: String },
+          subtitle: { type: String },
+          image_url: { type: String },
+          default_action_url: { type: String }, // وقتی روی خود عکس کلیک شد
+          buttons: [
+            {
+              title: { type: String },
+              url: { type: String },
+              type: { type: String, default: 'web_url' },
+            },
+          ],
+        },
+      ],
     },
   ],
 
