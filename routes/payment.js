@@ -30,6 +30,7 @@ router.get('/subscription', authMiddleware, async (req, res) => {
       endDate: sub.endDate,
       usage: sub.usage, // { messagesUsed: 5000, accountsUsed: 1 }
       limits: sub.currentLimits, // { messageCount: 5000, accountCount: 3 }
+      features: sub.currentFeatures,
       daysLeft: Math.ceil(
         (new Date(sub.endDate) - new Date()) / (1000 * 60 * 60 * 24)
       ),

@@ -15,23 +15,35 @@ router.get('/', authMiddleware, async (req, res) => {
   }
 });
 
-// 2. دریافت تنظیمات یک اکانت خاص
+// 2. دریافت تنظیمات کامل (ربات + هوش مصنوعی) - *** اصلاح شده ***
 router.get('/:igId/settings', authMiddleware, async (req, res) => {
   try {
     const account = await IGConnections.findOne({
       ig_userId: req.params.igId,
       user_id: req.user.id,
-    });
+    }).populate('aiConfig.activePersonaId'); // اگر پرسونا دارد، آن را هم بیاور
 
     if (!account) return res.status(404).json({ error: 'Account not found' });
 
-    res.json(account.botConfig);
+    // ترکیب تنظیمات ربات و هوش مصنوعی در یک آبجکت
+    const settings = {
+      // تنظیمات عمومی ربات (از botConfig)
+      ...(account.botConfig || {}),
+
+      // تنظیمات هوش مصنوعی (از aiConfig)
+      aiConfig: account.aiConfig || { enabled: false, systemPrompt: '' },
+    };
+
+    // حذف مقادیر mongoose (مثل _id و toObject) برای تمیزی
+    // (اینجا دستی ساختیم پس تمیز است)
+
+    res.json(settings);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// 3. آپدیت تنظیمات (شامل تنظیمات AI)
+// 3. آپدیت تنظیمات (شامل تنظیمات AI) - *** اصلاح شده ***
 router.put('/:igId/settings', authMiddleware, async (req, res) => {
   try {
     const {
@@ -39,21 +51,37 @@ router.put('/:igId/settings', authMiddleware, async (req, res) => {
       responseDelay,
       publicReplyText,
       checkFollow,
-      followWarning,
-      aiConfig,
+      followWarning, // فیلدهای botConfig
+      aiConfig, // فیلد aiConfig (شامل enabled, prompt, persona)
     } = req.body;
 
-    const updateData = {
-      'botConfig.isActive': isActive,
-      'botConfig.responseDelay': responseDelay,
-      'botConfig.publicReplyText': publicReplyText,
-      'botConfig.checkFollow': checkFollow,
-      'botConfig.followWarning': followWarning,
-    };
+    // ساخت آبجکت آپدیت داینامیک
+    const updateData = {};
 
-    // فقط اگر aiConfig ارسال شده بود آپدیتش کن
+    // آپدیت فیلدهای botConfig (فقط اگر ارسال شده باشند)
+    if (typeof isActive !== 'undefined')
+      updateData['botConfig.isActive'] = isActive;
+    if (typeof responseDelay !== 'undefined')
+      updateData['botConfig.responseDelay'] = responseDelay;
+    if (typeof publicReplyText !== 'undefined')
+      updateData['botConfig.publicReplyText'] = publicReplyText;
+    if (typeof checkFollow !== 'undefined')
+      updateData['botConfig.checkFollow'] = checkFollow;
+    if (typeof followWarning !== 'undefined')
+      updateData['botConfig.followWarning'] = followWarning;
+
+    // آپدیت فیلدهای aiConfig (فقط اگر ارسال شده باشند)
     if (aiConfig) {
-      updateData['aiConfig'] = aiConfig;
+      if (typeof aiConfig.enabled !== 'undefined')
+        updateData['aiConfig.enabled'] = aiConfig.enabled;
+      if (typeof aiConfig.systemPrompt !== 'undefined')
+        updateData['aiConfig.systemPrompt'] = aiConfig.systemPrompt;
+      if (typeof aiConfig.activePersonaId !== 'undefined')
+        updateData['aiConfig.activePersonaId'] = aiConfig.activePersonaId;
+      if (typeof aiConfig.strictMode !== 'undefined')
+        updateData['aiConfig.strictMode'] = aiConfig.strictMode;
+      if (typeof aiConfig.creativity !== 'undefined')
+        updateData['aiConfig.creativity'] = aiConfig.creativity;
     }
 
     const account = await IGConnections.findOneAndUpdate(
@@ -64,13 +92,19 @@ router.put('/:igId/settings', authMiddleware, async (req, res) => {
 
     if (!account) return res.status(404).json({ error: 'Account not found' });
 
-    res.json(account);
+    // بازگشت فرمت ترکیبی (مثل GET)
+    const settings = {
+      ...(account.botConfig || {}),
+      aiConfig: account.aiConfig || {},
+    };
+
+    res.json(settings);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// 4. دریافت لیست پست‌های اینستاگرام (Media) - *** جدید ***
+// 4. دریافت مدیا
 router.get('/:igId/media', authMiddleware, async (req, res) => {
   try {
     const account = await IGConnections.findOne({
@@ -80,14 +114,13 @@ router.get('/:igId/media', authMiddleware, async (req, res) => {
 
     if (!account) return res.status(404).json({ error: 'Account not found' });
 
-    // درخواست به Graph API
     const response = await axios.get(
       `https://graph.instagram.com/v22.0/${account.ig_userId}/media`,
       {
         params: {
           fields:
             'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp',
-          limit: 50, // ۵۰ پست آخر
+          limit: 50,
           access_token: account.access_token,
         },
       }
@@ -95,8 +128,9 @@ router.get('/:igId/media', authMiddleware, async (req, res) => {
 
     res.json(response.data.data);
   } catch (e) {
-    console.error('Media Fetch Error:', e.response?.data || e.message);
-    res.status(500).json({ error: 'Failed to fetch media from Instagram' });
+    // console.error('Media Fetch Error:', e.response?.data || e.message);
+    // اگر ارور داد آرایه خالی بده که پنل کرش نکنه
+    res.json([]);
   }
 });
 
