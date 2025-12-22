@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
-const Campaign = require('../models/Campaign');
+const Campaign = require('../models/Campaign'); // <--- اطمینان از وجود این خط
+const Triggers = require('../models/Triggers'); // <--- اطمینان از وجود این خط
 const authMiddleware = require('../middleware/auth');
-const Triggers = require('../models/Triggers');
+
 router.use(authMiddleware);
 
 // 1. لیست کمپین‌ها
@@ -14,16 +15,18 @@ router.get('/', async (req, res) => {
 
     const campaigns = await Campaign.find({ ig_accountId })
       .sort({ created_at: -1 })
+      // Populate کردن نام فلوها برای نمایش در لیست
       .populate('ab_testing.variant_a.flow_id', 'name')
       .populate('ab_testing.variant_b.flow_id', 'name');
 
     res.json(campaigns);
   } catch (e) {
+    console.error('Get Campaigns Error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-// 2. ساخت کمپین جدید
+// 2. ساخت کمپین جدید + تریگر متصل
 router.post('/', async (req, res) => {
   try {
     const {
@@ -37,35 +40,61 @@ router.post('/', async (req, res) => {
       limits,
     } = req.body;
 
-    // 1. ساخت کمپین
+    // اعتبارسنجی اولیه
+    if (!ig_accountId || !name) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // پردازش کلمات کلیدی (اطمینان از اینکه آرایه است)
+    let processedKeywords = [];
+    if (Array.isArray(keywords)) {
+      processedKeywords = keywords.map((k) =>
+        k.toString().toLowerCase().trim()
+      );
+    } else if (typeof keywords === 'string') {
+      processedKeywords = keywords
+        .split(',')
+        .map((k) => k.trim().toLowerCase());
+    }
+
+    // 1. ساخت کمپین در دیتابیس
     const newCampaign = await Campaign.create({
       app_userId: req.user.id,
       ig_accountId,
       name,
-      media_id,
+      media_id: media_id || null, // اگر نال بود یعنی عمومی
       media_url,
-      keywords: keywords.map((k) => k.toLowerCase().trim()),
+      keywords: processedKeywords,
       ab_testing,
       schedule,
       limits,
     });
 
     // 2. ساخت تریگر مخفی متصل به کمپین
-    // (از فلو A به عنوان پیش‌فرض استفاده می‌کنیم، لاجیک A/B در پروسسور هندل می‌شود)
-    await Triggers.create({
-      app_userId: req.user.id,
-      ig_accountId,
-      keywords: keywords.map((k) => k.toLowerCase().trim()),
-      match_type: 'contains', // یا دقیق، بسته به نیاز
-      media_id,
-      flow_id: ab_testing.variant_a, // وصل کردن به فلو A
-      campaign_id: newCampaign._id, // <--- اتصال حیاتی!
-      type: 'both', // کمپین‌ها معمولا روی کامنت هستند
-    });
+    // (تریگر را به فلو A وصل می‌کنیم، لاجیک A/B در پروسسور هندل می‌شود)
+    if (ab_testing && ab_testing.variant_a) {
+      await Triggers.create({
+        app_userId: req.user.id,
+        ig_accountId,
+        keywords: processedKeywords,
+        match_type: 'contains',
+
+        // اتصال به پست خاص (خیلی مهم)
+        media_id: media_id || null,
+
+        flow_id: ab_testing.variant_a, // اتصال به فلو اصلی
+        campaign_id: newCampaign._id, // <--- اتصال به کمپین
+
+        type: 'both', // کمپین‌ها معمولا روی کامنت هستند اما both میگذاریم
+        is_active: true,
+      });
+      console.log(`✅ Campaign Trigger Created for: ${name}`);
+    }
 
     res.json(newCampaign);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error('Create Campaign Error:', e); // لاگ کامل خطا
+    res.status(500).json({ error: 'خطا در ساخت کمپین: ' + e.message });
   }
 });
 
@@ -84,10 +113,18 @@ router.patch('/:id/status', async (req, res) => {
   }
 });
 
-// 4. حذف
+// 4. حذف کمپین (و تریگرهای مرتبط)
 router.delete('/:id', async (req, res) => {
   try {
-    await Campaign.findByIdAndDelete(req.params.id);
+    // حذف خود کمپین
+    const campaign = await Campaign.findByIdAndDelete(req.params.id);
+
+    if (campaign) {
+      // حذف تریگرهای متصل به این کمپین
+      await Triggers.deleteMany({ campaign_id: req.params.id });
+      console.log(`🗑️ Campaign & Triggers deleted: ${req.params.id}`);
+    }
+
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
