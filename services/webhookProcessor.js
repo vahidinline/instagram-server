@@ -4,6 +4,7 @@ const Triggers = require('../models/Triggers');
 const Flows = require('../models/Flows');
 const MessageLog = require('../models/MessageLogs');
 const Customer = require('../models/Customer');
+const Campaign = require('../models/Campaign'); // <--- مدل کمپین اضافه شد
 const subManager = require('./subscriptionManager');
 const azureService = require('./azureService');
 
@@ -17,8 +18,8 @@ async function handleMessage(entry, messaging) {
   // 1. جلوگیری از لوپ (پیام‌های اکو)
   if (messaging.message && messaging.message.is_echo) return;
 
-  const igAccountId = entry.id; // اکانت بیزینس ما
-  const senderId = messaging.sender.id; // مشتری
+  const igAccountId = entry.id;
+  const senderId = messaging.sender.id;
   const text = messaging.message?.text;
 
   if (!text) return;
@@ -92,7 +93,6 @@ async function handleMessage(entry, messaging) {
     if (hasAiAccess && text.length > 2) {
       try {
         analysis = await azureService.analyzeMessage(text, currentStage);
-        // console.log('🧠 CRM Analysis:', analysis);
       } catch (e) {
         console.error('CRM Analysis Failed');
       }
@@ -163,207 +163,50 @@ async function handleMessage(entry, messaging) {
 
     if (trigger && trigger.flow_id) {
       console.log(`💡 Trigger Match: [${trigger.keywords.join(', ')}]`);
-      const flow = await Flows.findById(trigger.flow_id);
 
-      if (flow) {
-        if (botConfig.responseDelay > 0) {
-          await new Promise((r) =>
-            setTimeout(r, botConfig.responseDelay * 1000)
-          );
-        }
+      // *** بررسی قوانین کمپین (جدید) ***
+      const campaignCheck = await checkCampaignRules(trigger);
+      if (!campaignCheck) return; // اگر قوانین کمپین اجازه نداد، خارج شو
 
-        for (const msg of flow.messages) {
-          let contentToSend = msg.content;
-          let messageType = 'replied';
-          let tokensUsed = 0;
+      const campaign = campaignCheck.campaign; // اگر تریگر مال کمپین بود
 
-          // *** فلوهای ترکیبی (Hybrid AI) ***
-          if (msg.type === 'ai_response') {
-            if (!hasAiAccess) continue;
-            const hasTokens = await subManager.checkAiLimit(
-              quotaCheck.subscription
-            );
-            if (!hasTokens) continue;
+      // اجرای فلو
+      await executeFlow(
+        trigger,
+        igAccountId,
+        senderId,
+        token,
+        botConfig,
+        quotaCheck,
+        userInfo,
+        text,
+        aiConfig
+      );
 
-            // تعیین پرامپت
-            let systemPrompt =
-              aiConfig.activePersonaId?.systemPrompt ||
-              aiConfig.systemPrompt ||
-              'You are helpful.';
-            const hybridPrompt = msg.content
-              ? `${systemPrompt}\n\nTask: ${msg.content}`
-              : systemPrompt;
+      // آپدیت وضعیت پیام ورودی
+      incomingLog.status = 'processed';
+      await incomingLog.save();
 
-            const senderData = {
-              id: senderId,
-              username: userInfo.username,
-              fullname: userInfo.name,
-            };
-
-            // دریافت تاریخچه چت (۱۰ پیام آخر)
-            const history = await getChatHistory(
-              igAccountId,
-              senderId,
-              incomingLog._id
-            );
-
-            const aiResult = await azureService.askAI(
-              igAccountId,
-              text,
-              hybridPrompt,
-              senderData,
-              aiConfig,
-              history
-            );
-
-            if (!aiResult || !aiResult.content) continue;
-
-            contentToSend = aiResult.content;
-            tokensUsed = aiResult.usage?.total_tokens || 0;
-            messageType = 'replied_ai';
-          }
-
-          const sent = await sendReply(
-            igAccountId,
-            senderId,
-            { ...msg._doc, content: contentToSend },
-            token
-          );
-
-          if (sent) {
-            if (tokensUsed > 0) {
-              await subManager.incrementAiUsage(
-                quotaCheck.subscription._id,
-                tokensUsed
-              );
-            } else {
-              // اگر پیام معمولی بود
-              if (messageType !== 'replied_ai')
-                await subManager.incrementUsage(quotaCheck.subscription._id);
-            }
-
-            const replyLog = await MessageLog.create({
-              ig_accountId: igAccountId,
-              sender_id: senderId,
-              sender_username: userInfo.name || userInfo.username,
-              sender_avatar: userInfo.profile_picture,
-              content: contentToSend || `[${msg.type.toUpperCase()}]`,
-              direction: 'outgoing',
-              status: messageType,
-              triggered_by: trigger._id,
-            });
-
-            if (global.io)
-              global.io.to(igAccountId).emit('new_message', replyLog);
-          }
-        }
-        await Flows.findByIdAndUpdate(trigger.flow_id, {
-          $inc: { usage_count: 1 },
+      // افزایش آمار کمپین (اگر وجود داشت)
+      if (campaign) {
+        await Campaign.findByIdAndUpdate(campaign._id, {
+          $inc: { 'limits.currentReplies': 1 },
         });
-        incomingLog.status = 'processed';
-        await incomingLog.save();
       }
     }
     // 9. هوش مصنوعی خالص (AI Only)
     else if (aiConfig.enabled) {
-      if (!hasAiAccess) return;
-      const hasTokens = await subManager.checkAiLimit(quotaCheck.subscription);
-      if (!hasTokens) {
-        console.log('⛔ AI Token Limit Reached.');
-        return;
-      }
-
-      console.log('🤖 Asking AI...');
-
-      let systemPrompt =
-        aiConfig.activePersonaId?.systemPrompt ||
-        aiConfig.systemPrompt ||
-        'You are helpful.';
-      const senderData = {
-        id: senderId,
-        username: userInfo.username,
-        fullname: userInfo.name,
-      };
-
-      // دریافت تاریخچه چت
-      const history = await getChatHistory(
+      // اجرای AI
+      await handleAIResponse(
         igAccountId,
         senderId,
-        incomingLog._id
-      );
-
-      // دریافت لیست فلوها (Tools)
-      const availableFlows = await Flows.find({
-        ig_accountId: igAccountId,
-      }).select('name');
-
-      const aiResult = await azureService.askAI(
-        igAccountId,
         text,
-        systemPrompt,
-        senderData,
+        token,
         aiConfig,
-        history,
-        availableFlows
+        quotaCheck,
+        userInfo,
+        incomingLog
       );
-
-      if (aiResult) {
-        if (aiResult.usage?.total_tokens) {
-          await subManager.incrementAiUsage(
-            quotaCheck.subscription._id,
-            aiResult.usage.total_tokens
-          );
-        }
-
-        // حالت الف: AI دستور اجرای فلو داد (Function Calling)
-        if (aiResult.action === 'trigger_flow') {
-          const targetFlow = await Flows.findOne({
-            ig_accountId: igAccountId,
-            name: aiResult.flowName,
-          });
-          if (targetFlow) {
-            console.log(`🤖 AI Triggered Flow: ${targetFlow.name}`);
-            // اجرای دستی فلو
-            await executeFlow(
-              { flow_id: targetFlow._id },
-              igAccountId,
-              senderId,
-              token,
-              botConfig,
-              quotaCheck,
-              userInfo,
-              text,
-              aiConfig
-            );
-          }
-        }
-        // حالت ب: پاسخ متنی معمولی
-        else if (aiResult.content) {
-          const sent = await sendReply(
-            igAccountId,
-            senderId,
-            { content: aiResult.content, type: 'text' },
-            token
-          );
-
-          if (sent) {
-            const replyLog = await MessageLog.create({
-              ig_accountId: igAccountId,
-              sender_id: senderId,
-              sender_username: userInfo.name || userInfo.username,
-              sender_avatar: userInfo.profile_picture,
-              content: aiResult.content,
-              direction: 'outgoing',
-              status: 'replied_ai',
-            });
-
-            if (global.io)
-              global.io.to(igAccountId).emit('new_message', replyLog);
-            incomingLog.status = 'processed_ai';
-            await incomingLog.save();
-          }
-        }
-      }
     }
   } catch (error) {
     console.error('❌ Error in handleMessage:', error.message);
@@ -407,6 +250,12 @@ async function handleComment(entry, change) {
   );
 
   if (trigger && trigger.flow_id) {
+    // *** بررسی قوانین کمپین (جدید) ***
+    const campaignCheck = await checkCampaignRules(trigger);
+    if (!campaignCheck) return;
+
+    const campaign = campaignCheck.campaign;
+
     const flow = await Flows.findById(trigger.flow_id);
 
     if (flow) {
@@ -448,7 +297,7 @@ async function handleComment(entry, change) {
         }\n\n👇👇👇\n${messageToSend}`;
       }
 
-      // لینک دکمه‌ها و مدیا را بچسبان (چون در دایرکتِ کامنت رندر نمی‌شوند)
+      // لینک دکمه‌ها و مدیا را بچسبان
       if (firstMsg.buttons && firstMsg.buttons.length > 0) {
         messageToSend +=
           '\n\n🔗 لینک‌ها:\n' +
@@ -458,7 +307,7 @@ async function handleComment(entry, change) {
         messageToSend += `\n\n📥 فایل: ${firstMsg.media_url}`;
       }
 
-      // ج) ارسال دایرکت
+      // ج) ارسال دایرکت خصوصی
       try {
         await axios.post(
           `${GRAPH_URL}/me/messages`,
@@ -472,7 +321,15 @@ async function handleComment(entry, change) {
         console.log('✅ Private Reply Sent.');
         await subManager.incrementUsage(quotaCheck.subscription._id);
 
-        await MessageLog.create({
+        // افزایش آمار کمپین
+        if (campaign) {
+          await Campaign.findByIdAndUpdate(campaign._id, {
+            $inc: { 'limits.currentReplies': 1 },
+          });
+        }
+
+        // *** اصلاح شده: تعریف replyLog قبل از استفاده ***
+        const replyLog = await MessageLog.create({
           ig_accountId: igAccountId,
           sender_id: senderId,
           sender_username: senderUsername,
@@ -482,6 +339,7 @@ async function handleComment(entry, change) {
           triggered_by: trigger._id,
         });
 
+        // ارسال به سوکت
         if (global.io) global.io.to(igAccountId).emit('new_message', replyLog);
       } catch (e) {
         console.error('❌ Private Reply Error:', e.response?.data || e.message);
@@ -494,7 +352,62 @@ async function handleComment(entry, change) {
 // توابع کمکی (Helpers)
 // ----------------------------------------------------------------
 
-// 1. اجرای فلو (تکرار لاجیک برای وقتی که AI فلو را صدا می‌زند)
+// 1. بررسی قوانین کمپین (جدید)
+async function checkCampaignRules(trigger) {
+  if (!trigger.campaign_id) return { allowed: true, campaign: null }; // تریگر معمولی
+
+  const campaign = await Campaign.findById(trigger.campaign_id);
+  if (!campaign) return { allowed: true, campaign: null }; // کمپین پاک شده، مثل تریگر عادی رفتار کن
+
+  const now = new Date();
+
+  // بررسی وضعیت
+  if (campaign.status !== 'active') {
+    console.log(`⛔ Campaign Paused/Ended: ${campaign.name}`);
+    return false;
+  }
+
+  // بررسی تاریخ
+  if (
+    campaign.schedule.startDate &&
+    now < new Date(campaign.schedule.startDate)
+  ) {
+    console.log(`⛔ Campaign Not Started Yet`);
+    return false;
+  }
+  if (campaign.schedule.endDate && now > new Date(campaign.schedule.endDate)) {
+    console.log(`⛔ Campaign Ended`);
+    return false;
+  }
+
+  // بررسی ساعت روزانه
+  const currentHours =
+    now.getHours().toString().padStart(2, '0') +
+    ':' +
+    now.getMinutes().toString().padStart(2, '0');
+  if (campaign.schedule.dailyStartTime && campaign.schedule.dailyEndTime) {
+    if (
+      currentHours < campaign.schedule.dailyStartTime ||
+      currentHours > campaign.schedule.dailyEndTime
+    ) {
+      console.log(`⛔ Outside Campaign Daily Hours`);
+      return false;
+    }
+  }
+
+  // بررسی سقف تعداد
+  if (
+    campaign.limits.maxReplies > 0 &&
+    campaign.limits.currentReplies >= campaign.limits.maxReplies
+  ) {
+    console.log(`⛔ Campaign Limit Reached`);
+    return false;
+  }
+
+  return { allowed: true, campaign };
+}
+
+// 2. اجرای فلو
 async function executeFlow(
   trigger,
   igAccountId,
@@ -506,7 +419,7 @@ async function executeFlow(
   userText,
   aiConfig
 ) {
-  const flow = await Flows.findById(trigger.flow_id);
+  const flow = await Flows.findById(trigger.flow_id || trigger.flowId);
   if (!flow) return;
 
   if (botConfig.responseDelay > 0)
@@ -515,11 +428,41 @@ async function executeFlow(
   for (const msg of flow.messages) {
     let contentToSend = msg.content;
     let messageType = 'replied';
+    let tokensUsed = 0;
 
     if (msg.type === 'ai_response') {
-      // (همان لاگیک AI که در handleMessage بود)
-      // برای سادگی اینجا کپی نکردم چون معمولا AI فلوهای ساده را تریگر می‌کند
-      // اما اگر نیاز به AI تو در تو دارید، باید این بخش را کپی کنید
+      const hasTokens = await subManager.checkAiLimit(quotaCheck.subscription);
+      if (!hasTokens) continue;
+
+      const systemPrompt =
+        aiConfig.activePersonaId?.systemPrompt ||
+        aiConfig.systemPrompt ||
+        'Helpful assistant.';
+      const hybridPrompt = msg.content
+        ? `${systemPrompt}\n\nTask: ${msg.content}`
+        : systemPrompt;
+      const senderData = { id: senderId, username: userInfo.username };
+
+      // دریافت لیست فلوها برای جلوگیری از لوپ، اینجا خالی می‌فرستیم
+      const aiResult = await azureService.askAI(
+        igAccountId,
+        userText,
+        hybridPrompt,
+        senderData,
+        aiConfig,
+        [],
+        []
+      );
+
+      if (!aiResult?.content) continue;
+      contentToSend = aiResult.content;
+      tokensUsed = aiResult.usage?.total_tokens || 0;
+      if (tokensUsed > 0)
+        await subManager.incrementAiUsage(
+          quotaCheck.subscription._id,
+          tokensUsed
+        );
+      messageType = 'replied_ai';
     }
 
     const sent = await sendReply(
@@ -529,16 +472,18 @@ async function executeFlow(
       token
     );
     if (sent) {
-      await subManager.incrementUsage(quotaCheck.subscription._id);
+      if (messageType !== 'replied_ai')
+        await subManager.incrementUsage(quotaCheck.subscription._id);
+
       const log = await MessageLog.create({
         ig_accountId: igAccountId,
         sender_id: senderId,
-        sender_username: userInfo.name,
+        sender_username: userInfo.name || userInfo.username,
         sender_avatar: userInfo.profile_picture,
-        content: contentToSend || `[${msg.type}]`,
+        content: contentToSend || `[${msg.type.toUpperCase()}]`,
         direction: 'outgoing',
         status: messageType,
-        triggered_by: trigger._id,
+        triggered_by: trigger._id || null,
       });
       if (global.io) global.io.to(igAccountId).emit('new_message', log);
     }
@@ -546,7 +491,105 @@ async function executeFlow(
   await Flows.findByIdAndUpdate(flow._id, { $inc: { usage_count: 1 } });
 }
 
-// 2. دریافت تاریخچه
+// 3. هندل کردن پاسخ AI خالص
+async function handleAIResponse(
+  igAccountId,
+  senderId,
+  text,
+  token,
+  aiConfig,
+  quotaCheck,
+  userInfo,
+  incomingLog
+) {
+  const hasTokens = await subManager.checkAiLimit(quotaCheck.subscription);
+  if (!hasTokens) {
+    console.log('⛔ AI Token Limit Reached.');
+    return;
+  }
+
+  console.log('🤖 Asking AI...');
+  let systemPrompt =
+    aiConfig.activePersonaId?.systemPrompt ||
+    aiConfig.systemPrompt ||
+    'You are helpful.';
+  const senderData = {
+    id: senderId,
+    username: userInfo.username,
+    fullname: userInfo.name,
+  };
+
+  const history = await getChatHistory(igAccountId, senderId, incomingLog._id);
+  const availableFlows = await Flows.find({ ig_accountId: igAccountId }).select(
+    'name'
+  );
+
+  const aiResult = await azureService.askAI(
+    igAccountId,
+    text,
+    systemPrompt,
+    senderData,
+    aiConfig,
+    history,
+    availableFlows
+  );
+
+  if (aiResult) {
+    if (aiResult.usage?.total_tokens) {
+      await subManager.incrementAiUsage(
+        quotaCheck.subscription._id,
+        aiResult.usage.total_tokens
+      );
+    }
+
+    if (aiResult.action === 'trigger_flow') {
+      const targetFlow = await Flows.findOne({
+        ig_accountId: igAccountId,
+        name: aiResult.flowName,
+      });
+      if (targetFlow) {
+        console.log(`🤖 AI Triggered Flow: ${targetFlow.name}`);
+        const botConfig = { isActive: true, responseDelay: 0 }; // Default config for triggered flow
+        await executeFlow(
+          { flow_id: targetFlow._id },
+          igAccountId,
+          senderId,
+          token,
+          botConfig,
+          quotaCheck,
+          userInfo,
+          text,
+          aiConfig
+        );
+      }
+    } else if (aiResult.content) {
+      const sent = await sendReply(
+        igAccountId,
+        senderId,
+        { content: aiResult.content, type: 'text' },
+        token
+      );
+
+      if (sent) {
+        const replyLog = await MessageLog.create({
+          ig_accountId: igAccountId,
+          sender_id: senderId,
+          sender_username: userInfo.name || userInfo.username,
+          sender_avatar: userInfo.profile_picture,
+          content: aiResult.content,
+          direction: 'outgoing',
+          status: 'replied_ai',
+        });
+
+        if (global.io) global.io.to(igAccountId).emit('new_message', replyLog);
+        incomingLog.status = 'processed_ai';
+        await incomingLog.save();
+      }
+    }
+  }
+}
+
+// 4. دریافت تاریخچه
 async function getChatHistory(igAccountId, senderId, currentMsgId) {
   try {
     const logs = await MessageLog.find({
@@ -566,7 +609,7 @@ async function getChatHistory(igAccountId, senderId, currentMsgId) {
   }
 }
 
-// 3. دریافت پروفایل
+// 5. دریافت پروفایل
 async function fetchUserProfile(senderId, myIgId, token) {
   try {
     const userRes = await axios.get(`${GRAPH_URL}/${senderId}`, {
@@ -596,7 +639,7 @@ async function fetchUserProfile(senderId, myIgId, token) {
   }
 }
 
-// 4. جستجوی تریگر (مرتب‌سازی شده)
+// 6. جستجوی تریگر
 async function findMatchingTrigger(igAccountId, text, type, mediaId = null) {
   if (!text) return null;
   const allTriggers = await Triggers.find({
@@ -611,7 +654,9 @@ async function findMatchingTrigger(igAccountId, text, type, mediaId = null) {
 
   for (const trigger of sortedTriggers) {
     if (!trigger.keywords) continue;
+    // شرط مهم برای کمپین: اگر تریگر مدیا آی‌دی دارد، باید با مدیای فعلی یکی باشد
     if (trigger.media_id && trigger.media_id !== mediaId) continue;
+
     for (const keyword of trigger.keywords) {
       const k = keyword.toLowerCase().trim();
       if (trigger.match_type === 'exact' && lowerText === k) return trigger;
@@ -624,7 +669,7 @@ async function findMatchingTrigger(igAccountId, text, type, mediaId = null) {
   return null;
 }
 
-// 5. ارسال پیام (چند رسانه‌ای)
+// 7. ارسال پیام
 async function sendReply(myId, recipientId, messageData, token) {
   try {
     let payload = { recipient: { id: recipientId }, message: {} };

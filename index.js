@@ -126,7 +126,7 @@ io.on('connection', (socket) => {
 });
 
 app.get('/', (req, res) => res.send('Server is Running 🚀'));
-
+app.use('/api/campaigns', require('./routes/campaigns'));
 server.listen(app.get('port'), () => {
   console.log(`🚀 Server listening on port ${app.get('port')}`);
 });

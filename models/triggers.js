@@ -25,6 +25,11 @@ const TriggerSchema = new mongoose.Schema({
     ref: 'Flows',
     required: true,
   },
+  campaign_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Campaign',
+    default: null,
+  },
 
   is_active: { type: Boolean, default: true },
   type: { type: String, enum: ['dm', 'comment', 'both'], default: 'both' },
