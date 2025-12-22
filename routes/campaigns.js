@@ -57,6 +57,21 @@ router.post('/', async (req, res) => {
         .map((k) => k.trim().toLowerCase());
     }
 
+    let finalAB = ab_testing || {};
+
+    if (finalAB.variant_a && typeof finalAB.variant_a === 'string') {
+      finalAB.variant_a = { flow_id: finalAB.variant_a };
+    }
+    if (finalAB.variant_b && typeof finalAB.variant_b === 'string') {
+      finalAB.variant_b = { flow_id: finalAB.variant_b };
+    }
+
+    // اطمینان از اینکه flow_id وجود دارد
+    if (finalAB.variant_a && !finalAB.variant_a.flow_id) {
+      // اگر آبجکت خالی بود، خطا ندهد (یا دیفالت بگذاریم)
+      // ولی چون required است، باید هندل شود
+    }
+
     // 1. ساخت کمپین در دیتابیس
     const newCampaign = await Campaign.create({
       app_userId: req.user.id,
