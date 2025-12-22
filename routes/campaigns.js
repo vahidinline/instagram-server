@@ -26,6 +26,8 @@ router.get('/', async (req, res) => {
   }
 });
 
+// ...
+
 // 2. ساخت کمپین جدید + تریگر متصل
 router.post('/', async (req, res) => {
   try {
@@ -40,12 +42,12 @@ router.post('/', async (req, res) => {
       limits,
     } = req.body;
 
-    // اعتبارسنجی اولیه
+    // اعتبارسنجی
     if (!ig_accountId || !name) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // پردازش کلمات کلیدی (اطمینان از اینکه آرایه است)
+    // پردازش کلمات کلیدی
     let processedKeywords = [];
     if (Array.isArray(keywords)) {
       processedKeywords = keywords.map((k) =>
@@ -57,8 +59,9 @@ router.post('/', async (req, res) => {
         .map((k) => k.trim().toLowerCase());
     }
 
+    // اصلاح ساختار A/B (اطمینان از آبجکت بودن)
+    // این بخش حیاتی است تا مطمئن شویم variant_a.flow_id در دسترس است
     let finalAB = ab_testing || {};
-
     if (finalAB.variant_a && typeof finalAB.variant_a === 'string') {
       finalAB.variant_a = { flow_id: finalAB.variant_a };
     }
@@ -66,41 +69,39 @@ router.post('/', async (req, res) => {
       finalAB.variant_b = { flow_id: finalAB.variant_b };
     }
 
-    // اطمینان از اینکه flow_id وجود دارد
-    if (finalAB.variant_a && !finalAB.variant_a.flow_id) {
-      // اگر آبجکت خالی بود، خطا ندهد (یا دیفالت بگذاریم)
-      // ولی چون required است، باید هندل شود
-    }
-
-    // 1. ساخت کمپین در دیتابیس
+    // 1. ساخت کمپین
     const newCampaign = await Campaign.create({
       app_userId: req.user.id,
       ig_accountId,
       name,
-      media_id: media_id || null, // اگر نال بود یعنی عمومی
+      media_id: media_id || null,
       media_url,
       keywords: processedKeywords,
-      ab_testing,
+      ab_testing: finalAB,
       schedule,
       limits,
     });
 
     // 2. ساخت تریگر مخفی متصل به کمپین
-    // (تریگر را به فلو A وصل می‌کنیم، لاجیک A/B در پروسسور هندل می‌شود)
-    if (ab_testing && ab_testing.variant_a) {
+    if (finalAB.variant_a && finalAB.variant_a.flow_id) {
+      // *** اصلاح اصلی اینجاست: ***
+      // ما باید مطمئن شویم که فقط رشته ID را میفرستیم، نه کل آبجکت را
+      const flowIdString =
+        typeof finalAB.variant_a.flow_id === 'object'
+          ? finalAB.variant_a.flow_id.toString()
+          : finalAB.variant_a.flow_id;
+
       await Triggers.create({
         app_userId: req.user.id,
         ig_accountId,
         keywords: processedKeywords,
         match_type: 'contains',
-
-        // اتصال به پست خاص (خیلی مهم)
         media_id: media_id || null,
 
-        flow_id: ab_testing.variant_a, // اتصال به فلو اصلی
-        campaign_id: newCampaign._id, // <--- اتصال به کمپین
+        flow_id: flowIdString, // <--- استفاده از استرینگ تمیز
 
-        type: 'both', // کمپین‌ها معمولا روی کامنت هستند اما both میگذاریم
+        campaign_id: newCampaign._id,
+        type: 'both',
         is_active: true,
       });
       console.log(`✅ Campaign Trigger Created for: ${name}`);
@@ -108,10 +109,12 @@ router.post('/', async (req, res) => {
 
     res.json(newCampaign);
   } catch (e) {
-    console.error('Create Campaign Error:', e); // لاگ کامل خطا
+    console.error('Create Campaign Error:', e);
     res.status(500).json({ error: 'خطا در ساخت کمپین: ' + e.message });
   }
 });
+
+// ... (بقیه فایل بدون تغییر)
 
 // 3. تغییر وضعیت (Pause/Active)
 router.patch('/:id/status', async (req, res) => {
