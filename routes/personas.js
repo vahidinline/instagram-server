@@ -2,26 +2,27 @@ const express = require('express');
 const router = express.Router();
 const Persona = require('../models/Persona');
 const authMiddleware = require('../middleware/auth');
-const { buildSystemPrompt } = require('../utils/promptBuilder'); // <--- ایمپورت جدید
+const azureService = require('../services/azureService'); // <--- ✅ ایمپورت حیاتی
+const { buildSystemPrompt } = require('../utils/promptBuilder');
 
-// 1. دریافت لیست
+// 1. دریافت لیست پرسوناها
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const personas = await Persona.find({
       $or: [{ isSystem: true }, { user_id: req.user.id }],
     }).sort({ isSystem: -1, created_at: -1 });
+
     res.json(personas);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// 2. ساخت پرسونا (هوشمند)
+// 2. ساخت پرسونا
 router.post('/', authMiddleware, async (req, res) => {
   try {
     const { name, gender, avatar, config } = req.body;
 
-    // ساخت خودکار پرامپت بر اساس تنظیمات
     const generatedPrompt = buildSystemPrompt(name, gender, config);
 
     const newPersona = await Persona.create({
@@ -29,8 +30,8 @@ router.post('/', authMiddleware, async (req, res) => {
       name,
       gender,
       avatar,
-      config, // ذخیره تنظیمات برای ویرایش بعدی
-      systemPrompt: generatedPrompt, // ذخیره پرامپت نهایی برای استفاده
+      config,
+      systemPrompt: generatedPrompt,
       isSystem: false,
     });
 
@@ -40,12 +41,11 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
-// 3. ویرایش پرسونا (PUT) - جدید
+// 3. ویرایش پرسونا
 router.put('/:id', authMiddleware, async (req, res) => {
   try {
     const { name, gender, avatar, config } = req.body;
 
-    // بازسازی پرامپت
     const generatedPrompt = buildSystemPrompt(name, gender, config);
 
     const updatedPersona = await Persona.findOneAndUpdate(
@@ -62,7 +62,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
   }
 });
 
-// 4. حذف
+// 4. حذف پرسونا
 router.delete('/:id', authMiddleware, async (req, res) => {
   try {
     await Persona.findOneAndDelete({
@@ -71,6 +71,25 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     });
     res.json({ success: true });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 5. آنالیز لحن (Tone Cloning)
+router.post('/analyze-tone', authMiddleware, async (req, res) => {
+  try {
+    const { samples } = req.body;
+
+    if (!samples || samples.length < 2) {
+      return res.status(400).json({ error: 'حداقل ۲ نمونه متن لازم است.' });
+    }
+
+    // فراخوانی متد جدید در سرویس آژور
+    const generatedPrompt = await azureService.analyzeTone(samples);
+
+    res.json({ systemPrompt: generatedPrompt });
+  } catch (e) {
+    console.error(e);
     res.status(500).json({ error: e.message });
   }
 });

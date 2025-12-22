@@ -325,6 +325,56 @@ const azureService = {
       return 'Error in demo chat.';
     }
   },
-};
 
+  /**
+   * آنالیز لحن پیشرفته (Advanced Tone Cloning)
+   */
+  analyzeTone: async (samples) => {
+    try {
+      const systemPrompt = `
+      You are an expert Linguist and Ghostwriter specializing in Persian (Farsi).
+
+      YOUR GOAL:
+      Create a "Persona Instruction" that forces an AI to speak EXACTLY like the user samples provided.
+
+      ANALYSIS STEPS:
+      1. Identify "Signature Phrases" (تکیه‌کلام‌ها): Words like "عزیزم", "قربانت", "فدات", "داداش", "جناب", etc.
+      2. Analyze Emoji Usage: Frequency, specific emojis used (e.g., 🌹 vs 🌺 vs 🔥).
+      3. Sentence Structure: Short/Long? Formal/Slang? Broken sentences?
+      4. Opening/Closing: How do they start and end messages?
+
+      OUTPUT REQUIREMENT:
+      Generate a System Prompt in Persian that explicitly lists the catchphrases to use.
+
+      Example of expected output logic (in Persian):
+      "You are a friendly assistant. You MUST use these catchphrases frequently: ['دمت گرم', 'ای جان']. Always end sentences with '🙏'. Use broken/colloquial Farsi."
+
+      OUTPUT JSON ONLY:
+      {
+        "generatedSystemPrompt": "The resulting instruction string..."
+      }
+      `;
+
+      const userContent = `User's Actual Past Messages:\n${samples
+        .map((s, i) => `- ${s}`)
+        .join('\n')}`;
+
+      const response = await openai.chat.completions.create({
+        model: chatDeployment,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent },
+        ],
+        temperature: 0.4, // دما را کم میکنیم تا تحلیل دقیق‌تر و کمتر خلاقانه باشد
+        response_format: { type: 'json_object' },
+      });
+
+      const result = JSON.parse(response.choices[0].message.content);
+      return result.generatedSystemPrompt;
+    } catch (e) {
+      console.error('Tone Analysis Error:', e.message);
+      return 'تو یک دستیار هوشمند و مودب هستی.';
+    }
+  },
+};
 module.exports = azureService;
