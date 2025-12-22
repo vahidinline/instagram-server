@@ -171,4 +171,79 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// 3. ویرایش کمپین (PUT)
+router.put('/:id', async (req, res) => {
+  try {
+    const {
+      name,
+      media_id,
+      media_url,
+      keywords,
+      ab_testing,
+      schedule,
+      limits,
+    } = req.body;
+
+    // پردازش کلمات
+    let processedKeywords = [];
+    if (Array.isArray(keywords)) {
+      processedKeywords = keywords.map((k) =>
+        k.toString().toLowerCase().trim()
+      );
+    }
+
+    // اصلاح ساختار A/B
+    let finalAB = ab_testing || {};
+    if (finalAB.variant_a && typeof finalAB.variant_a === 'string')
+      finalAB.variant_a = { flow_id: finalAB.variant_a };
+    if (finalAB.variant_b && typeof finalAB.variant_b === 'string')
+      finalAB.variant_b = { flow_id: finalAB.variant_b };
+    if (!finalAB.enabled) delete finalAB.variant_b;
+
+    // 1. آپدیت خود کمپین
+    const updatedCampaign = await Campaign.findByIdAndUpdate(
+      req.params.id,
+      {
+        name,
+        media_id,
+        media_url,
+        keywords: processedKeywords,
+        ab_testing: finalAB,
+        schedule,
+        limits,
+      },
+      { new: true }
+    );
+
+    if (!updatedCampaign)
+      return res.status(404).json({ error: 'Campaign not found' });
+
+    // 2. آپدیت تریگر متصل به این کمپین (خیلی مهم)
+    // تریگر باید با تغییرات کمپین هماهنگ شود
+    if (finalAB.variant_a && finalAB.variant_a.flow_id) {
+      const flowIdString =
+        typeof finalAB.variant_a.flow_id === 'object'
+          ? finalAB.variant_a.flow_id.toString()
+          : finalAB.variant_a.flow_id;
+
+      await Triggers.findOneAndUpdate(
+        { campaign_id: req.params.id },
+        {
+          keywords: processedKeywords,
+          media_id: media_id || null,
+          flow_id: flowIdString, // همیشه فلو A اصلی است
+          is_active: true, // اگر قبلاً غیرفعال بود فعال شود
+        },
+        { upsert: true } // اگر نبود بساز (محض اطمینان)
+      );
+      console.log(`✅ Campaign Trigger Updated: ${name}`);
+    }
+
+    res.json(updatedCampaign);
+  } catch (e) {
+    console.error('Edit Campaign Error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
