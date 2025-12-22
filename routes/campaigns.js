@@ -1,10 +1,22 @@
 const express = require('express');
 const router = express.Router();
-const Campaign = require('../models/Campaign'); // <--- اطمینان از وجود این خط
-const Triggers = require('../models/Triggers'); // <--- اطمینان از وجود این خط
+const Campaign = require('../models/Campaign');
+const Triggers = require('../models/Triggers');
+const MessageLog = require('../models/MessageLogs');
+const Lead = require('../models/Lead');
 const authMiddleware = require('../middleware/auth');
+const mongoose = require('mongoose');
 
 router.use(authMiddleware);
+
+// --- تابع کمکی برای استخراج ID تمیز ---
+const getSafeId = (value) => {
+  if (!value) return null;
+  if (typeof value === 'string') return value;
+  if (value.flow_id) return getSafeId(value.flow_id);
+  if (value._id) return value._id.toString();
+  return value.toString();
+};
 
 // 1. لیست کمپین‌ها
 router.get('/', async (req, res) => {
@@ -15,23 +27,70 @@ router.get('/', async (req, res) => {
 
     const campaigns = await Campaign.find({ ig_accountId })
       .sort({ created_at: -1 })
-      // Populate کردن نام فلوها برای نمایش در لیست
       .populate('ab_testing.variant_a.flow_id', 'name')
       .populate('ab_testing.variant_b.flow_id', 'name');
 
     res.json(campaigns);
   } catch (e) {
-    console.error('Get Campaigns Error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-// ...
+// 2. دریافت آمار دقیق یک کمپین (جدید 📊)
+router.get('/:id/stats', async (req, res) => {
+  try {
+    const campaignId = req.params.id;
+    const campaign = await Campaign.findById(campaignId);
+    if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
 
-// 2. ساخت کمپین جدید + تریگر متصل
-// ... (ابتدای فایل و ایمپورت‌ها مثل قبل)
+    // پیدا کردن تریگر متصل به این کمپین
+    const trigger = await Triggers.findOne({ campaign_id: campaignId });
 
-// 2. ساخت کمپین جدید + تریگر متصل
+    let stats = {
+      total_engagements: 0, // تعداد کل تعاملات (کامنت)
+      replies_sent: 0, // تعداد پاسخ‌های موفق
+      leads_generated: 0, // لیدهای جذب شده در بازه کمپین
+      conversion_rate: 0,
+    };
+
+    if (trigger) {
+      // شمارش تعداد دفعاتی که این تریگر فعال شده (از روی لاگ پیام‌های خروجی)
+      stats.replies_sent = await MessageLog.countDocuments({
+        triggered_by: trigger._id,
+        direction: 'outgoing',
+      });
+
+      // تخمین تعاملات (پیام‌های ورودی مرتبط که باعث تریگر شدند)
+      // (چون ما trigger_id رو روی incoming نمیزنیم، فعلا برابر با خروجی میگیریم یا کمی بیشتر)
+      stats.total_engagements = stats.replies_sent;
+
+      // محاسبه لیدهای جذب شده در بازه زمانی فعالیت کمپین
+      // (اگر کمپین هنوز فعال است، تا الان. اگر تمام شده، تا زمان پایان)
+      const startDate = campaign.created_at;
+      const endDate = campaign.schedule?.endDate || new Date();
+
+      stats.leads_generated = await Lead.countDocuments({
+        ig_accountId: campaign.ig_accountId,
+        created_at: { $gte: startDate, $lte: endDate },
+      });
+
+      // محاسبه نرخ تبدیل
+      if (stats.total_engagements > 0) {
+        stats.conversion_rate = (
+          (stats.leads_generated / stats.total_engagements) *
+          100
+        ).toFixed(1);
+      }
+    }
+
+    res.json(stats);
+  } catch (e) {
+    console.error('Campaign Stats Error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 3. ساخت کمپین جدید
 router.post('/', async (req, res) => {
   try {
     const {
@@ -45,12 +104,10 @@ router.post('/', async (req, res) => {
       limits,
     } = req.body;
 
-    // اعتبارسنجی
     if (!ig_accountId || !name) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // پردازش کلمات کلیدی
     let processedKeywords = [];
     if (Array.isArray(keywords)) {
       processedKeywords = keywords.map((k) =>
@@ -62,37 +119,15 @@ router.post('/', async (req, res) => {
         .map((k) => k.trim().toLowerCase());
     }
 
-    // *** اصلاح حیاتی برای A/B Testing ***
     let finalAB = ab_testing || {};
+    if (finalAB.variant_a && typeof finalAB.variant_a === 'string')
+      finalAB.variant_a = { flow_id: finalAB.variant_a };
+    if (finalAB.variant_b && typeof finalAB.variant_b === 'string')
+      finalAB.variant_b = { flow_id: finalAB.variant_b };
+    if (finalAB.variant_b && !finalAB.variant_b.flow_id)
+      delete finalAB.variant_b;
+    if (!finalAB.enabled) delete finalAB.variant_b;
 
-    // اصلاح Variant A
-    if (finalAB.variant_a) {
-      if (typeof finalAB.variant_a === 'string') {
-        finalAB.variant_a = { flow_id: finalAB.variant_a };
-      }
-      // اگر آیدی خالی بود، اصلا آبجکت رو نذار
-      if (!finalAB.variant_a.flow_id) delete finalAB.variant_a;
-    }
-
-    // اصلاح Variant B (علت اصلی ارور)
-    if (finalAB.variant_b) {
-      if (typeof finalAB.variant_b === 'string') {
-        finalAB.variant_b = { flow_id: finalAB.variant_b };
-      }
-      // اگر رشته خالی بود ("")، کلا حذفش کن
-      if (!finalAB.variant_b.flow_id) {
-        delete finalAB.variant_b;
-      }
-    }
-
-    // اگر A/B کلاً غیرفعال بود، درصد را ریست کن
-    if (!finalAB.enabled) {
-      finalAB.split_percentage = 100; // همه برن سمت A (اگر A باشه)
-      delete finalAB.variant_b; // B رو حذف کن
-    }
-    // ************************************
-
-    // 1. ساخت کمپین
     const newCampaign = await Campaign.create({
       app_userId: req.user.id,
       ig_accountId,
@@ -100,31 +135,24 @@ router.post('/', async (req, res) => {
       media_id: media_id || null,
       media_url,
       keywords: processedKeywords,
-      ab_testing: finalAB, // دیتای تمیز شده
+      ab_testing: finalAB,
       schedule,
       limits,
     });
 
-    // 2. ساخت تریگر مخفی
-    // (فقط اگر نسخه A وجود داشت تریگر بساز)
-    if (finalAB.variant_a && finalAB.variant_a.flow_id) {
-      const flowIdString =
-        typeof finalAB.variant_a.flow_id === 'object'
-          ? finalAB.variant_a.flow_id.toString()
-          : finalAB.variant_a.flow_id;
-
+    const triggerFlowId = getSafeId(finalAB.variant_a?.flow_id);
+    if (triggerFlowId) {
       await Triggers.create({
         app_userId: req.user.id,
         ig_accountId,
         keywords: processedKeywords,
         match_type: 'contains',
         media_id: media_id || null,
-        flow_id: flowIdString,
+        flow_id: triggerFlowId,
         campaign_id: newCampaign._id,
         type: 'both',
         is_active: true,
       });
-      console.log(`✅ Campaign Trigger Created for: ${name}`);
     }
 
     res.json(newCampaign);
@@ -134,44 +162,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-// ... (بقیه روت‌ها بدون تغییر)
-
-// ... (بقیه فایل بدون تغییر)
-
-// 3. تغییر وضعیت (Pause/Active)
-router.patch('/:id/status', async (req, res) => {
-  try {
-    const { status } = req.body;
-    const campaign = await Campaign.findByIdAndUpdate(
-      req.params.id,
-      { status },
-      { new: true }
-    );
-    res.json(campaign);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// 4. حذف کمپین (و تریگرهای مرتبط)
-router.delete('/:id', async (req, res) => {
-  try {
-    // حذف خود کمپین
-    const campaign = await Campaign.findByIdAndDelete(req.params.id);
-
-    if (campaign) {
-      // حذف تریگرهای متصل به این کمپین
-      await Triggers.deleteMany({ campaign_id: req.params.id });
-      console.log(`🗑️ Campaign & Triggers deleted: ${req.params.id}`);
-    }
-
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// 3. ویرایش کمپین (PUT)
+// 4. ویرایش کمپین
 router.put('/:id', async (req, res) => {
   try {
     const {
@@ -184,7 +175,6 @@ router.put('/:id', async (req, res) => {
       limits,
     } = req.body;
 
-    // پردازش کلمات
     let processedKeywords = [];
     if (Array.isArray(keywords)) {
       processedKeywords = keywords.map((k) =>
@@ -192,15 +182,15 @@ router.put('/:id', async (req, res) => {
       );
     }
 
-    // اصلاح ساختار A/B
     let finalAB = ab_testing || {};
     if (finalAB.variant_a && typeof finalAB.variant_a === 'string')
       finalAB.variant_a = { flow_id: finalAB.variant_a };
     if (finalAB.variant_b && typeof finalAB.variant_b === 'string')
       finalAB.variant_b = { flow_id: finalAB.variant_b };
+    if (finalAB.variant_b && !finalAB.variant_b.flow_id)
+      delete finalAB.variant_b;
     if (!finalAB.enabled) delete finalAB.variant_b;
 
-    // 1. آپدیت خود کمپین
     const updatedCampaign = await Campaign.findByIdAndUpdate(
       req.params.id,
       {
@@ -218,30 +208,35 @@ router.put('/:id', async (req, res) => {
     if (!updatedCampaign)
       return res.status(404).json({ error: 'Campaign not found' });
 
-    // 2. آپدیت تریگر متصل به این کمپین (خیلی مهم)
-    // تریگر باید با تغییرات کمپین هماهنگ شود
-    if (finalAB.variant_a && finalAB.variant_a.flow_id) {
-      const flowIdString =
-        typeof finalAB.variant_a.flow_id === 'object'
-          ? finalAB.variant_a.flow_id.toString()
-          : finalAB.variant_a.flow_id;
-
+    const triggerFlowId = getSafeId(finalAB.variant_a?.flow_id);
+    if (triggerFlowId) {
       await Triggers.findOneAndUpdate(
         { campaign_id: req.params.id },
         {
           keywords: processedKeywords,
           media_id: media_id || null,
-          flow_id: flowIdString, // همیشه فلو A اصلی است
-          is_active: true, // اگر قبلاً غیرفعال بود فعال شود
+          flow_id: triggerFlowId,
+          is_active: true,
         },
-        { upsert: true } // اگر نبود بساز (محض اطمینان)
+        { upsert: true, setDefaultsOnInsert: true }
       );
-      console.log(`✅ Campaign Trigger Updated: ${name}`);
     }
 
     res.json(updatedCampaign);
   } catch (e) {
-    console.error('Edit Campaign Error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 5. حذف کمپین
+router.delete('/:id', async (req, res) => {
+  try {
+    const campaign = await Campaign.findByIdAndDelete(req.params.id);
+    if (campaign) {
+      await Triggers.deleteMany({ campaign_id: req.params.id });
+    }
+    res.json({ success: true });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
