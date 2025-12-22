@@ -29,6 +29,9 @@ router.get('/', async (req, res) => {
 // ...
 
 // 2. ساخت کمپین جدید + تریگر متصل
+// ... (ابتدای فایل و ایمپورت‌ها مثل قبل)
+
+// 2. ساخت کمپین جدید + تریگر متصل
 router.post('/', async (req, res) => {
   try {
     const {
@@ -59,15 +62,35 @@ router.post('/', async (req, res) => {
         .map((k) => k.trim().toLowerCase());
     }
 
-    // اصلاح ساختار A/B (اطمینان از آبجکت بودن)
-    // این بخش حیاتی است تا مطمئن شویم variant_a.flow_id در دسترس است
+    // *** اصلاح حیاتی برای A/B Testing ***
     let finalAB = ab_testing || {};
-    if (finalAB.variant_a && typeof finalAB.variant_a === 'string') {
-      finalAB.variant_a = { flow_id: finalAB.variant_a };
+
+    // اصلاح Variant A
+    if (finalAB.variant_a) {
+      if (typeof finalAB.variant_a === 'string') {
+        finalAB.variant_a = { flow_id: finalAB.variant_a };
+      }
+      // اگر آیدی خالی بود، اصلا آبجکت رو نذار
+      if (!finalAB.variant_a.flow_id) delete finalAB.variant_a;
     }
-    if (finalAB.variant_b && typeof finalAB.variant_b === 'string') {
-      finalAB.variant_b = { flow_id: finalAB.variant_b };
+
+    // اصلاح Variant B (علت اصلی ارور)
+    if (finalAB.variant_b) {
+      if (typeof finalAB.variant_b === 'string') {
+        finalAB.variant_b = { flow_id: finalAB.variant_b };
+      }
+      // اگر رشته خالی بود ("")، کلا حذفش کن
+      if (!finalAB.variant_b.flow_id) {
+        delete finalAB.variant_b;
+      }
     }
+
+    // اگر A/B کلاً غیرفعال بود، درصد را ریست کن
+    if (!finalAB.enabled) {
+      finalAB.split_percentage = 100; // همه برن سمت A (اگر A باشه)
+      delete finalAB.variant_b; // B رو حذف کن
+    }
+    // ************************************
 
     // 1. ساخت کمپین
     const newCampaign = await Campaign.create({
@@ -77,15 +100,14 @@ router.post('/', async (req, res) => {
       media_id: media_id || null,
       media_url,
       keywords: processedKeywords,
-      ab_testing: finalAB,
+      ab_testing: finalAB, // دیتای تمیز شده
       schedule,
       limits,
     });
 
-    // 2. ساخت تریگر مخفی متصل به کمپین
+    // 2. ساخت تریگر مخفی
+    // (فقط اگر نسخه A وجود داشت تریگر بساز)
     if (finalAB.variant_a && finalAB.variant_a.flow_id) {
-      // *** اصلاح اصلی اینجاست: ***
-      // ما باید مطمئن شویم که فقط رشته ID را میفرستیم، نه کل آبجکت را
       const flowIdString =
         typeof finalAB.variant_a.flow_id === 'object'
           ? finalAB.variant_a.flow_id.toString()
@@ -97,9 +119,7 @@ router.post('/', async (req, res) => {
         keywords: processedKeywords,
         match_type: 'contains',
         media_id: media_id || null,
-
-        flow_id: flowIdString, // <--- استفاده از استرینگ تمیز
-
+        flow_id: flowIdString,
         campaign_id: newCampaign._id,
         type: 'both',
         is_active: true,
@@ -113,6 +133,8 @@ router.post('/', async (req, res) => {
     res.status(500).json({ error: 'خطا در ساخت کمپین: ' + e.message });
   }
 });
+
+// ... (بقیه روت‌ها بدون تغییر)
 
 // ... (بقیه فایل بدون تغییر)
 
