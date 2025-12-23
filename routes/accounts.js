@@ -134,4 +134,32 @@ router.get('/:igId/media', authMiddleware, async (req, res) => {
   }
 });
 
+// 5. حذف (قطع اتصال) اکانت
+router.delete('/:igId', authMiddleware, async (req, res) => {
+  try {
+    const { igId } = req.params;
+
+    // فقط اکانتی که متعلق به همین کاربر است را پاک کن (امنیت)
+    const result = await IGConnections.findOneAndDelete({
+      ig_userId: igId,
+      user_id: req.user.id,
+    });
+
+    if (!result) {
+      return res
+        .status(404)
+        .json({ error: 'Account not found or access denied' });
+    }
+
+    // اختیاری: پاک کردن لاگ‌ها و تریگرهای مربوط به این اکانت
+    // await Triggers.deleteMany({ ig_accountId: igId });
+    // await MessageLog.deleteMany({ ig_accountId: igId });
+    // (فعلا پاک نمیکنیم تا دیتا از دست نرود، فقط اتصال قطع میشود)
+
+    res.json({ success: true, message: 'Account disconnected' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;

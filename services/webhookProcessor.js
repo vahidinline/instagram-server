@@ -4,7 +4,7 @@ const Triggers = require('../models/Triggers');
 const Flows = require('../models/Flows');
 const MessageLog = require('../models/MessageLogs');
 const Customer = require('../models/Customer');
-const Campaign = require('../models/Campaign'); // <--- مدل کمپین اضافه شد
+const Campaign = require('../models/Campaign');
 const subManager = require('./subscriptionManager');
 const azureService = require('./azureService');
 
@@ -58,7 +58,6 @@ async function handleMessage(entry, messaging) {
       name: '',
     };
 
-    // تلاش برای خواندن از دیتابیس (کش) برای سرعت بیشتر
     const existingCustomer = await Customer.findOne({
       ig_accountId: igAccountId,
       sender_id: senderId,
@@ -70,13 +69,10 @@ async function handleMessage(entry, messaging) {
         profile_picture: existingCustomer.profilePic,
       };
     } else if (token) {
-      // اگر مشتری جدید است، از API بگیر
       userInfo = await fetchUserProfile(senderId, igAccountId, token);
     }
 
-    // ==================================================
     // 5. تحلیل هوشمند CRM و پایپ‌لاین 📊
-    // ==================================================
     let analysis = {
       sentiment: 'neutral',
       tags: [],
@@ -89,7 +85,6 @@ async function handleMessage(entry, messaging) {
     );
     const currentStage = existingCustomer ? existingCustomer.stage : 'lead';
 
-    // تحلیل فقط برای کاربران Pro و پیام‌های معنی‌دار
     if (hasAiAccess && text.length > 2) {
       try {
         analysis = await azureService.analyzeMessage(text, currentStage);
@@ -164,13 +159,13 @@ async function handleMessage(entry, messaging) {
     if (trigger && trigger.flow_id) {
       console.log(`💡 Trigger Match: [${trigger.keywords.join(', ')}]`);
 
-      // *** بررسی قوانین کمپین (جدید) ***
+      // *** بررسی قوانین کمپین ***
       const campaignCheck = await checkCampaignRules(trigger);
       if (!campaignCheck) return; // اگر قوانین کمپین اجازه نداد، خارج شو
 
-      const campaign = campaignCheck.campaign; // اگر تریگر مال کمپین بود
+      const campaign = campaignCheck.campaign;
 
-      // اجرای فلو
+      // اجرای فلو (با تابع کمکی)
       await executeFlow(
         trigger,
         igAccountId,
@@ -194,9 +189,8 @@ async function handleMessage(entry, messaging) {
         });
       }
     }
-    // 9. هوش مصنوعی خالص (AI Only)
+    // 9. هوش مصنوعی خالص (AI Agentic)
     else if (aiConfig.enabled) {
-      // اجرای AI
       await handleAIResponse(
         igAccountId,
         senderId,
@@ -250,10 +244,9 @@ async function handleComment(entry, change) {
   );
 
   if (trigger && trigger.flow_id) {
-    // *** بررسی قوانین کمپین (جدید) ***
+    // *** بررسی قوانین کمپین ***
     const campaignCheck = await checkCampaignRules(trigger);
     if (!campaignCheck) return;
-
     const campaign = campaignCheck.campaign;
 
     const flow = await Flows.findById(trigger.flow_id);
@@ -274,13 +267,17 @@ async function handleComment(entry, change) {
         }
       }
 
-      // ب) آماده‌سازی متن دایرکت (Fallback Logic)
+      // ب) آماده‌سازی متن دایرکت (برای جلوگیری از ارور متن خالی)
       const firstMsg = flow.messages[0];
       let messageToSend = firstMsg.content;
 
-      // اگر متن خالی بود (مثل کاروسل)، متن جایگزین بساز
+      // اگر متن خالی بود (مثل کاروسل)، یک متن جایگزین بساز
       if (!messageToSend) {
-        if (firstMsg.type === 'card') {
+        if (
+          firstMsg.type === 'card' &&
+          firstMsg.cards &&
+          firstMsg.cards.length > 0
+        ) {
           messageToSend =
             `👇 لیست موارد پیشنهادی:\n\n` +
             firstMsg.cards.map((c) => `🔹 ${c.title}`).join('\n');
@@ -297,7 +294,7 @@ async function handleComment(entry, change) {
         }\n\n👇👇👇\n${messageToSend}`;
       }
 
-      // لینک دکمه‌ها و مدیا را بچسبان
+      // لینک دکمه‌ها و مدیا را بچسبان (چون در دایرکتِ کامنت کاروسل کامل ارسال نمی‌شود)
       if (firstMsg.buttons && firstMsg.buttons.length > 0) {
         messageToSend +=
           '\n\n🔗 لینک‌ها:\n' +
@@ -321,14 +318,13 @@ async function handleComment(entry, change) {
         console.log('✅ Private Reply Sent.');
         await subManager.incrementUsage(quotaCheck.subscription._id);
 
-        // افزایش آمار کمپین
         if (campaign) {
           await Campaign.findByIdAndUpdate(campaign._id, {
             $inc: { 'limits.currentReplies': 1 },
           });
         }
 
-        // *** اصلاح شده: تعریف replyLog قبل از استفاده ***
+        // ثبت لاگ
         const replyLog = await MessageLog.create({
           ig_accountId: igAccountId,
           sender_id: senderId,
@@ -339,7 +335,6 @@ async function handleComment(entry, change) {
           triggered_by: trigger._id,
         });
 
-        // ارسال به سوکت
         if (global.io) global.io.to(igAccountId).emit('new_message', replyLog);
       } catch (e) {
         console.error('❌ Private Reply Error:', e.response?.data || e.message);
@@ -352,12 +347,12 @@ async function handleComment(entry, change) {
 // توابع کمکی (Helpers)
 // ----------------------------------------------------------------
 
-// 1. بررسی قوانین کمپین (جدید)
+// 1. بررسی قوانین کمپین (استخراج شده به عنوان تابع مستقل)
 async function checkCampaignRules(trigger) {
   if (!trigger.campaign_id) return { allowed: true, campaign: null }; // تریگر معمولی
 
   const campaign = await Campaign.findById(trigger.campaign_id);
-  if (!campaign) return { allowed: true, campaign: null }; // کمپین پاک شده، مثل تریگر عادی رفتار کن
+  if (!campaign) return { allowed: true, campaign: null }; // کمپین پاک شده
 
   const now = new Date();
 
@@ -371,14 +366,10 @@ async function checkCampaignRules(trigger) {
   if (
     campaign.schedule.startDate &&
     now < new Date(campaign.schedule.startDate)
-  ) {
-    console.log(`⛔ Campaign Not Started Yet`);
+  )
     return false;
-  }
-  if (campaign.schedule.endDate && now > new Date(campaign.schedule.endDate)) {
-    console.log(`⛔ Campaign Ended`);
+  if (campaign.schedule.endDate && now > new Date(campaign.schedule.endDate))
     return false;
-  }
 
   // بررسی ساعت روزانه
   const currentHours =
@@ -389,25 +380,21 @@ async function checkCampaignRules(trigger) {
     if (
       currentHours < campaign.schedule.dailyStartTime ||
       currentHours > campaign.schedule.dailyEndTime
-    ) {
-      console.log(`⛔ Outside Campaign Daily Hours`);
+    )
       return false;
-    }
   }
 
   // بررسی سقف تعداد
   if (
     campaign.limits.maxReplies > 0 &&
     campaign.limits.currentReplies >= campaign.limits.maxReplies
-  ) {
-    console.log(`⛔ Campaign Limit Reached`);
+  )
     return false;
-  }
 
   return { allowed: true, campaign };
 }
 
-// 2. اجرای فلو
+// 2. اجرای فلو (برای استفاده توسط تریگر و AI)
 async function executeFlow(
   trigger,
   igAccountId,
@@ -430,7 +417,14 @@ async function executeFlow(
     let messageType = 'replied';
     let tokensUsed = 0;
 
+    // Hybrid Flow (AI)
     if (msg.type === 'ai_response') {
+      const hasAccess = subManager.checkFeatureAccess(
+        quotaCheck.subscription,
+        'aiAccess'
+      );
+      if (!hasAccess) continue;
+
       const hasTokens = await subManager.checkAiLimit(quotaCheck.subscription);
       if (!hasTokens) continue;
 
@@ -443,7 +437,8 @@ async function executeFlow(
         : systemPrompt;
       const senderData = { id: senderId, username: userInfo.username };
 
-      // دریافت لیست فلوها برای جلوگیری از لوپ، اینجا خالی می‌فرستیم
+      // دریافت پاسخ از AI
+      // لیست فلوها را خالی میفرستیم تا لوپ نشود
       const aiResult = await azureService.askAI(
         igAccountId,
         userText,
@@ -455,6 +450,7 @@ async function executeFlow(
       );
 
       if (!aiResult?.content) continue;
+
       contentToSend = aiResult.content;
       tokensUsed = aiResult.usage?.total_tokens || 0;
       if (tokensUsed > 0)
@@ -478,7 +474,7 @@ async function executeFlow(
       const log = await MessageLog.create({
         ig_accountId: igAccountId,
         sender_id: senderId,
-        sender_username: userInfo.name || userInfo.username,
+        sender_username: userInfo.name,
         sender_avatar: userInfo.profile_picture,
         content: contentToSend || `[${msg.type.toUpperCase()}]`,
         direction: 'outgoing',
@@ -502,6 +498,9 @@ async function handleAIResponse(
   userInfo,
   incomingLog
 ) {
+  if (!subManager.checkFeatureAccess(quotaCheck.subscription, 'aiAccess'))
+    return;
+
   const hasTokens = await subManager.checkAiLimit(quotaCheck.subscription);
   if (!hasTokens) {
     console.log('⛔ AI Token Limit Reached.');
@@ -509,6 +508,7 @@ async function handleAIResponse(
   }
 
   console.log('🤖 Asking AI...');
+
   let systemPrompt =
     aiConfig.activePersonaId?.systemPrompt ||
     aiConfig.systemPrompt ||
@@ -542,6 +542,7 @@ async function handleAIResponse(
       );
     }
 
+    // حالت الف: AI دستور اجرای فلو داد
     if (aiResult.action === 'trigger_flow') {
       const targetFlow = await Flows.findOne({
         ig_accountId: igAccountId,
@@ -549,7 +550,7 @@ async function handleAIResponse(
       });
       if (targetFlow) {
         console.log(`🤖 AI Triggered Flow: ${targetFlow.name}`);
-        const botConfig = { isActive: true, responseDelay: 0 }; // Default config for triggered flow
+        const botConfig = { isActive: true, responseDelay: 0 };
         await executeFlow(
           { flow_id: targetFlow._id },
           igAccountId,
@@ -562,7 +563,9 @@ async function handleAIResponse(
           aiConfig
         );
       }
-    } else if (aiResult.content) {
+    }
+    // حالت ب: پاسخ متنی معمولی
+    else if (aiResult.content) {
       const sent = await sendReply(
         igAccountId,
         senderId,
@@ -654,9 +657,7 @@ async function findMatchingTrigger(igAccountId, text, type, mediaId = null) {
 
   for (const trigger of sortedTriggers) {
     if (!trigger.keywords) continue;
-    // شرط مهم برای کمپین: اگر تریگر مدیا آی‌دی دارد، باید با مدیای فعلی یکی باشد
     if (trigger.media_id && trigger.media_id !== mediaId) continue;
-
     for (const keyword of trigger.keywords) {
       const k = keyword.toLowerCase().trim();
       if (trigger.match_type === 'exact' && lowerText === k) return trigger;

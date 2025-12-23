@@ -4,7 +4,9 @@ const { SearchIndexClient, SearchClient } = require('@azure/search-documents');
 const crypto = require('crypto');
 const Lead = require('../models/Lead');
 
-console.log('🟢 AZURE SERVICE v10 - AGENTIC MODE (FLOW TRIGGERING) LOADED');
+console.log(
+  '🟢 AZURE SERVICE v13 - ULTIMATE (TONE + CRM + LEADS + RAG) LOADED'
+);
 
 // --- CONFIGURATION ---
 const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
@@ -39,7 +41,7 @@ const searchClient = new SearchClient(
   new AzureKeyCredential(searchKey)
 );
 
-// 3. ابزارهای پایه (لید)
+// 3. ابزارهای پایه (لید جنریشن)
 const baseTools = [
   {
     type: 'function',
@@ -54,8 +56,11 @@ const baseTools = [
             type: 'string',
             description: 'User phone number (e.g., 0912...)',
           },
-          name: { type: 'string', description: "User's name" },
-          product: { type: 'string', description: 'Interest product' },
+          name: { type: 'string', description: "User's name if provided" },
+          product: {
+            type: 'string',
+            description: 'Product or service user is interested in',
+          },
         },
         required: ['phone'],
       },
@@ -64,6 +69,9 @@ const baseTools = [
 ];
 
 const azureService = {
+  /**
+   * اطمینان از وجود ایندکس در آژور سرچ
+   */
   ensureIndexExists: async () => {
     try {
       await searchIndexClient.getIndex(indexName);
@@ -95,38 +103,52 @@ const azureService = {
         },
       };
       await searchIndexClient.createIndex(indexObj);
+      console.log('✅ Azure Search Index Created.');
     }
   },
 
+  /**
+   * تبدیل متن به وکتور (Embedding)
+   */
   getEmbedding: async (text) => {
     try {
       const response = await openai.embeddings.create({
         input: text,
         model: embeddingDeployment,
       });
-      return response.data[0].embedding;
+      return {
+        vector: response.data[0].embedding,
+        usage: response.usage.total_tokens,
+      };
     } catch (e) {
       console.error('Embedding Error:', e.message);
       throw e;
     }
   },
 
+  /**
+   * افزودن سند به پایگاه دانش
+   */
   addDocument: async (igAccountId, title, content) => {
     try {
       await azureService.ensureIndexExists();
-      const vector = await azureService.getEmbedding(content);
+      const { vector, usage } = await azureService.getEmbedding(content);
       const docId = crypto.randomBytes(16).toString('hex');
+
       const documents = [
         {
           id: docId,
-          content,
-          title,
+          content: content,
+          title: title,
           ig_accountId: igAccountId,
           contentVector: vector,
         },
       ];
+
       await searchClient.uploadDocuments(documents);
-      console.log(`✅ Document indexed for ${igAccountId}`);
+      console.log(
+        `✅ Document indexed for ${igAccountId}. Embed Tokens: ${usage}`
+      );
       return docId;
     } catch (e) {
       console.error('Indexing Error:', e.message);
@@ -134,16 +156,62 @@ const azureService = {
     }
   },
 
+  /**
+   * حذف سند
+   */
   deleteDocument: async (docId) => {
     try {
       const documents = [{ id: docId, '@search.action': 'delete' }];
       await searchClient.uploadDocuments(documents);
+      console.log(`🗑️ Document ${docId} deleted.`);
       return true;
     } catch (e) {
+      console.error('Azure Delete Error:', e.message);
       return false;
     }
   },
 
+  /**
+   * آنالیز لحن (Tone Cloning) 🎭
+   * (این همان تابعی بود که جا افتاده بود)
+   */
+  analyzeTone: async (samples) => {
+    try {
+      const systemPrompt = `
+      You are an expert Linguist. Analyze these Persian messages from a business owner.
+      Extract their unique writing style, tone, emoji usage, and sentence structure.
+
+      OUTPUT JSON ONLY:
+      {
+        "generatedSystemPrompt": "Write a prompt (in Persian) that instructs an AI to mimic this exact persona. Include details like: 'Use these specific catchphrases...', 'Use emojis like...', 'Be formal/informal...'"
+      }
+      `;
+
+      const userContent = `Samples:\n${samples
+        .map((s, i) => `${i + 1}. ${s}`)
+        .join('\n')}`;
+
+      const response = await openai.chat.completions.create({
+        model: chatDeployment,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent },
+        ],
+        temperature: 0.7,
+        response_format: { type: 'json_object' },
+      });
+
+      const result = JSON.parse(response.choices[0].message.content);
+      return result.generatedSystemPrompt;
+    } catch (e) {
+      console.error('Tone Analysis Error:', e.message);
+      return 'تو یک دستیار هوشمند و مودب هستی.';
+    }
+  },
+
+  /**
+   * تحلیل هوشمند پیام (CRM Intelligence) 📊
+   */
   analyzeMessage: async (text, currentStage = 'lead') => {
     try {
       const systemPrompt = `
@@ -158,6 +226,7 @@ const azureService = {
         "new_stage": "stage_name" | null
       }
       `;
+
       const response = await openai.chat.completions.create({
         model: chatDeployment,
         messages: [
@@ -167,36 +236,67 @@ const azureService = {
         temperature: 0.2,
         response_format: { type: 'json_object' },
       });
-      return JSON.parse(response.choices[0].message.content);
+
+      return {
+        result: JSON.parse(response.choices[0].message.content),
+        usage: response.usage.total_tokens,
+      };
     } catch (e) {
-      return { sentiment: 'neutral', tags: [], score: 0, new_stage: null };
+      return {
+        result: { sentiment: 'neutral', tags: [], score: 0, new_stage: null },
+        usage: 0,
+      };
     }
   },
 
   /**
-   * جستجو و پاسخ هوشمند (با قابلیت اجرای فلو)
+   * جستجو و پاسخ هوشمند (RAG + Tools + Memory + Flows) 🤖
    */
   askAI: async (
     igAccountId,
     userQuery,
-    systemInstruction,
+    systemInstruction = 'You are a helpful assistant.',
     senderData = {},
     aiConfig = {},
     history = [],
     availableFlows = []
   ) => {
     try {
+      let totalUsage = 0;
+
+      // 1. وکتور کردن سوال (هزینه دارد)
+      const { vector, usage: embedUsage } = await azureService.getEmbedding(
+        userQuery
+      );
+      totalUsage += embedUsage;
+
+      // 2. جستجو در آژور سرچ
+      const searchResults = await searchClient.search(userQuery, {
+        vectorQueries: [
+          { vector: vector, k: 5, fields: ['contentVector'], kind: 'vector' },
+        ],
+        filter: `ig_accountId eq '${igAccountId}'`,
+        select: ['content', 'title'],
+      });
+
+      let context = '';
+      for await (const result of searchResults.results) {
+        context += `[Source: ${result.document.title}]\n${result.document.content}\n---\n`;
+      }
+
+      if (!context) console.log('⚠️ No context found in KB.');
+
       const strictMode = aiConfig.strictMode ?? false;
       const temperature = aiConfig.creativity ?? 0.5;
 
-      // 1. آماده‌سازی ابزارها (اضافه کردن فلوها)
+      // اضافه کردن ابزار اجرای فلو به لیست ابزارها
       let dynamicTools = [...baseTools];
       if (availableFlows.length > 0) {
         dynamicTools.push({
           type: 'function',
           function: {
             name: 'trigger_flow',
-            description: `Use this tool ONLY if the user asks for something that matches one of these flows: [${availableFlows
+            description: `Trigger a pre-made flow if the user asks for: [${availableFlows
               .map((f) => f.name)
               .join(', ')}]`,
             parameters: {
@@ -205,7 +305,7 @@ const azureService = {
                 flow_name: {
                   type: 'string',
                   enum: availableFlows.map((f) => f.name),
-                  description: 'The exact name of the flow to trigger',
+                  description: 'The name of the flow to trigger',
                 },
               },
               required: ['flow_name'],
@@ -214,30 +314,11 @@ const azureService = {
         });
       }
 
-      // 2. RAG
-      const queryVector = await azureService.getEmbedding(userQuery);
-      const searchResults = await searchClient.search(userQuery, {
-        vectorQueries: [
-          {
-            vector: queryVector,
-            k: 5,
-            fields: ['contentVector'],
-            kind: 'vector',
-          },
-        ],
-        filter: `ig_accountId eq '${igAccountId}'`,
-        select: ['content', 'title'],
-      });
-
-      let context = '';
-      for await (const result of searchResults.results)
-        context += result.document.content + '\n---\n';
-
       let promptLogic = strictMode
-        ? 'Answer ONLY using the provided Context.'
+        ? "Answer ONLY using the provided Context. If not found, say 'اطلاعاتی ندارم'."
         : 'Use Context as primary source. Use general knowledge if needed.';
 
-      const finalSystemPrompt = `${systemInstruction}\n\n${promptLogic}\n\nCONTEXT:\n${context}\n\nIMPORTANT: If user gives phone, use 'save_lead_info'. If user asks for specific content available in flows, use 'trigger_flow'.`;
+      const finalSystemPrompt = `${systemInstruction}\n\n${promptLogic}\n\nCONTEXT FROM KNOWLEDGE BASE:\n${context}\n\nIMPORTANT: If user gives phone number, ALWAYS use 'save_lead_info'.`;
 
       const messages = [
         { role: 'system', content: finalSystemPrompt },
@@ -245,7 +326,7 @@ const azureService = {
         { role: 'user', content: userQuery },
       ];
 
-      // 3. درخواست GPT
+      // 3. درخواست به GPT
       const response = await openai.chat.completions.create({
         model: chatDeployment,
         messages: messages,
@@ -254,6 +335,7 @@ const azureService = {
         tool_choice: 'auto',
       });
 
+      totalUsage += response.usage.total_tokens;
       const choice = response.choices[0];
       const message = choice.message;
 
@@ -262,54 +344,67 @@ const azureService = {
         const toolCall = message.tool_calls[0];
         const args = JSON.parse(toolCall.function.arguments);
 
-        // الف: لید
+        // الف: لید جنریشن
         if (toolCall.function.name === 'save_lead_info') {
+          console.log('🎣 AI Lead Capture:', args);
           try {
             await Lead.create({
               ig_accountId,
               phone: args.phone,
+              extracted_name: args.name,
+              interest_product: args.product,
               ...senderData,
             });
-          } catch (e) {}
+          } catch (e) {
+            console.log('Lead DB Error:', e.message);
+          }
+
+          // ادامه مکالمه
           messages.push(message);
           messages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
-            content: JSON.stringify({ success: true }),
+            content: JSON.stringify({ success: true, message: 'Lead Saved' }),
           });
+
           const finalRes = await openai.chat.completions.create({
             model: chatDeployment,
             messages,
           });
+          totalUsage += finalRes.usage.total_tokens;
+
           return {
             content: finalRes.choices[0].message.content,
-            usage: finalRes.usage,
+            usage: { total_tokens: totalUsage },
             leadCaptured: true,
           };
         }
 
-        // ب: اجرای فلو (جدید)
+        // ب: اجرای فلو (Flow Triggering)
         else if (toolCall.function.name === 'trigger_flow') {
           console.log(`🤖 AI Triggering Flow: ${args.flow_name}`);
           return {
             action: 'trigger_flow',
             flowName: args.flow_name,
-            usage: response.usage,
+            usage: { total_tokens: totalUsage },
           };
         }
       }
 
       return {
         content: message.content,
-        usage: response.usage,
+        usage: { total_tokens: totalUsage },
         leadCaptured: false,
       };
     } catch (e) {
-      console.error('AI Error:', e.message);
+      console.error('AI Generation Error:', e.message);
       return null;
     }
   },
 
+  /**
+   * چت ساده (برای دمو)
+   */
   simpleChat: async (userMessage, systemPrompt) => {
     try {
       const response = await openai.chat.completions.create({
@@ -325,86 +420,6 @@ const azureService = {
       return 'Error in demo chat.';
     }
   },
-
-  /**
-   * آنالیز لحن پیشرفته (Advanced Tone Cloning)
-   */
-  analyzeTone: async (samples) => {
-    try {
-      const systemPrompt = `
-      You are an expert Linguist and Ghostwriter specializing in Persian (Farsi).
-
-      YOUR GOAL:
-      Create a "Persona Instruction" that forces an AI to speak EXACTLY like the user samples provided.
-
-      ANALYSIS STEPS:
-      1. Identify "Signature Phrases" (تکیه‌کلام‌ها): Words like "عزیزم", "قربانت", "فدات", "داداش", "جناب", etc.
-      2. Analyze Emoji Usage: Frequency, specific emojis used (e.g., 🌹 vs 🌺 vs 🔥).
-      3. Sentence Structure: Short/Long? Formal/Slang? Broken sentences?
-      4. Opening/Closing: How do they start and end messages?
-
-      OUTPUT REQUIREMENT:
-      Generate a System Prompt in Persian that explicitly lists the catchphrases to use.
-
-      Example of expected output logic (in Persian):
-      "You are a friendly assistant. You MUST use these catchphrases frequently: ['دمت گرم', 'ای جان']. Always end sentences with '🙏'. Use broken/colloquial Farsi."
-
-      OUTPUT JSON ONLY:
-      {
-        "generatedSystemPrompt": "The resulting instruction string..."
-      }
-      `;
-
-      const userContent = `User's Actual Past Messages:\n${samples
-        .map((s, i) => `- ${s}`)
-        .join('\n')}`;
-
-      const response = await openai.chat.completions.create({
-        model: chatDeployment,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userContent },
-        ],
-        temperature: 0.4, // دما را کم میکنیم تا تحلیل دقیق‌تر و کمتر خلاقانه باشد
-        response_format: { type: 'json_object' },
-      });
-
-      const result = JSON.parse(response.choices[0].message.content);
-      return result.generatedSystemPrompt;
-    } catch (e) {
-      console.error('Tone Analysis Error:', e.message);
-      return 'تو یک دستیار هوشمند و مودب هستی.';
-    }
-  },
-
-  /**
-   * فقط جستجو در دیتابیس (بدون چت)
-   * برای استفاده در ایجنت پشتیبانی
-   */
-  searchKnowledgeBase: async (igAccountId, query) => {
-    try {
-      const queryVector = await azureService.getEmbedding(query);
-      const searchResults = await searchClient.search(query, {
-        vectorQueries: [
-          {
-            vector: queryVector,
-            k: 3,
-            fields: ['contentVector'],
-            kind: 'vector',
-          },
-        ],
-        filter: `ig_accountId eq '${igAccountId}'`,
-        select: ['content'],
-      });
-
-      let context = '';
-      for await (const result of searchResults.results) {
-        context += result.document.content + '\n---\n';
-      }
-      return context || 'No specific documentation found.';
-    } catch (e) {
-      return '';
-    }
-  },
 };
+
 module.exports = azureService;
