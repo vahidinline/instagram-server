@@ -376,5 +376,35 @@ const azureService = {
       return 'تو یک دستیار هوشمند و مودب هستی.';
     }
   },
+
+  /**
+   * فقط جستجو در دیتابیس (بدون چت)
+   * برای استفاده در ایجنت پشتیبانی
+   */
+  searchKnowledgeBase: async (igAccountId, query) => {
+    try {
+      const queryVector = await azureService.getEmbedding(query);
+      const searchResults = await searchClient.search(query, {
+        vectorQueries: [
+          {
+            vector: queryVector,
+            k: 3,
+            fields: ['contentVector'],
+            kind: 'vector',
+          },
+        ],
+        filter: `ig_accountId eq '${igAccountId}'`,
+        select: ['content'],
+      });
+
+      let context = '';
+      for await (const result of searchResults.results) {
+        context += result.document.content + '\n---\n';
+      }
+      return context || 'No specific documentation found.';
+    } catch (e) {
+      return '';
+    }
+  },
 };
 module.exports = azureService;

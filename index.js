@@ -64,7 +64,8 @@ const knowledgeRoutes = require('./routes/knowledge');
 const leadsRoutes = require('./routes/leads');
 const personaRoutes = require('./routes/personas');
 const demoRoutes = require('./routes/demo');
-const mediaRoutes = require('./routes/media'); // <--- ✅ اضافه شد (مدیا)
+const mediaRoutes = require('./routes/media');
+const supportAgent = require('./routes/support');
 
 // --- API ENDPOINTS ---
 app.use('/api/auth', userAuthRoutes);
@@ -79,7 +80,8 @@ app.use('/api/knowledge', knowledgeRoutes);
 app.use('/api/leads', leadsRoutes);
 app.use('/api/personas', personaRoutes);
 app.use('/api/demo', demoRoutes);
-app.use('/api/media', mediaRoutes); // <--- ✅ اضافه شد (فعال‌سازی مسیر آپلود)
+app.use('/api/media', mediaRoutes);
+app.use('/api/support', supportAgent);
 
 // --- WEBHOOK VERIFICATION ---
 app.get('/instagram', function (req, res) {
