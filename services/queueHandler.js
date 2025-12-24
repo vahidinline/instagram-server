@@ -1,60 +1,48 @@
-const { Queue, Worker } = require('bullmq');
-const connection = require('./redisConfig');
 const processor = require('./webhookProcessor');
 
-// 1. ساخت صف پیام‌ها
-const messageQueue = new Queue('instagram-events', { connection });
+// صف ساده در حافظه (آرایه)
+const memoryQueue = [];
+let isProcessing = false;
 
-// 2. تعریف ورکر (کارگر) برای پردازش صف
-const worker = new Worker(
-  'instagram-events',
-  async (job) => {
-    const { type, entry, event } = job.data;
+/**
+ * تابع افزودن به صف (دقیقاً مثل قبل صدا زده می‌شود)
+ */
+const addToQueue = async (type, entry, event) => {
+  console.log(`📥 Added to Memory Queue: ${type}`);
+  memoryQueue.push({ type, entry, event });
 
-    console.log(`⚙️ Processing Job ${job.id} type: ${type}`);
+  // اگر ورکر بیکار است، روشنش کن
+  if (!isProcessing) {
+    processQueue();
+  }
+};
+
+/**
+ * ورکر داخلی (Loop)
+ */
+const processQueue = async () => {
+  if (isProcessing) return;
+  isProcessing = true;
+
+  while (memoryQueue.length > 0) {
+    const job = memoryQueue.shift(); // برداشتن اولین آیتم
 
     try {
-      if (type === 'message' || type === 'standby') {
-        // فراخوانی پردازشگر اصلی دایرکت
-        await processor.handleMessage(entry, event);
-      } else if (type === 'comment') {
-        // فراخوانی پردازشگر کامنت
-        await processor.handleComment(entry, event);
+      console.log(`⚙️ Processing Memory Job: ${job.type}`);
+
+      if (job.type === 'message' || job.type === 'standby') {
+        await processor.handleMessage(job.entry, job.event);
+      } else if (job.type === 'comment') {
+        await processor.handleComment(job.entry, job.event);
       }
     } catch (error) {
-      console.error(`❌ Job ${job.id} Failed:`, error.message);
-      throw error; // تا BullMQ بفهمد و در صورت نیاز Retry کند
+      console.error(`❌ Job Failed:`, error.message);
+      // در حافظه، Retry پیچیده است، پس فقط لاگ می‌کنیم و ادامه می‌دهیم
     }
-  },
-  {
-    connection,
-    concurrency: 10, // پردازش همزمان ۱۰ پیام (قابل افزایش)
-    limiter: {
-      max: 50, // حداکثر ۵۰ پیام
-      duration: 1000, // در هر ثانیه (جلوگیری از بن شدن توسط متا)
-    },
   }
-);
 
-// گوش دادن به رویدادهای ورکر
-worker.on('completed', (job) => {
-  console.log(`✅ Job ${job.id} Completed.`);
-});
-
-worker.on('failed', (job, err) => {
-  console.error(`🔥 Job ${job.id} Failed permanently: ${err.message}`);
-});
-
-// تابع افزودن به صف (که در index.js صدا زده می‌شود)
-const addToQueue = async (type, entry, event) => {
-  await messageQueue.add(
-    'process-event',
-    { type, entry, event },
-    {
-      removeOnComplete: true, // پاک کردن کارهای تمام شده برای سبک شدن ردیس
-      removeOnFail: 500, // نگه داشتن ۵۰۰ خطای آخر
-    }
-  );
+  isProcessing = false;
+  console.log('✅ Queue Drained (Idle).');
 };
 
 module.exports = { addToQueue };
