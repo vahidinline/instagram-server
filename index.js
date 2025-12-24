@@ -1,10 +1,10 @@
 /**
- * Main Server File - FINAL INTEGRATED VERSION
+ * Main Server File - FINAL INTEGRATED VERSION (With Redis Queue)
  */
 
 require('dotenv').config();
 
-// *** پچ سراسری برای کریپتو (حل مشکل کتابخانه‌های هوش مصنوعی) ***
+// Patch for Crypto
 const crypto = require('crypto');
 if (!global.crypto) {
   global.crypto = crypto;
@@ -17,8 +17,9 @@ const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
 
-// Import Processor
-const processor = require('./services/webhookProcessor');
+// *** تغییر ۱: ایمپورت کردن هندلر صف به جای پردازشگر مستقیم ***
+// const processor = require('./services/webhookProcessor'); // <--- حذف شد (چون ورکر صدا میزند)
+const queueHandler = require('./services/queueHandler'); // <--- اضافه شد
 
 // Database Connection
 const db = require('./models/index.js');
@@ -65,9 +66,9 @@ const leadsRoutes = require('./routes/leads');
 const personaRoutes = require('./routes/personas');
 const demoRoutes = require('./routes/demo');
 const mediaRoutes = require('./routes/media');
-const supportAgent = require('./routes/support');
-const campaignRoutes = require('./routes/campaigns');
 const adminRoutes = require('./routes/admin');
+const campaignRoutes = require('./routes/campaigns');
+const supportRoutes = require('./routes/support');
 
 // --- API ENDPOINTS ---
 app.use('/api/auth', userAuthRoutes);
@@ -85,7 +86,7 @@ app.use('/api/demo', demoRoutes);
 app.use('/api/media', mediaRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/campaigns', campaignRoutes);
-app.use('/api/support', supportAgent);
+app.use('/api/support', supportRoutes);
 
 // --- WEBHOOK VERIFICATION ---
 app.get('/instagram', function (req, res) {
@@ -99,24 +100,40 @@ app.get('/instagram', function (req, res) {
   }
 });
 
-// --- WEBHOOK HANDLER ---
+// --- WEBHOOK HANDLER (Asynchronous Queue) ---
 app.post('/instagram', async function (req, res) {
+  // 1. پاسخ سریع به متا (Fast ACK)
+  // این مهمترین بخش برای هندل کردن ترافیک بالاست
   res.sendStatus(200);
+
   const body = req.body;
   if (body.object === 'instagram') {
     for (const entry of body.entry) {
+      // 2. افزودن به صف به جای پردازش مستقیم
+
+      // الف: پیام‌های دایرکت
       if (entry.messaging) {
-        for (const event of entry.messaging)
-          await processor.handleMessage(entry, event);
+        for (const event of entry.messaging) {
+          // *** تغییر: استفاده از صف ***
+          await queueHandler.addToQueue('message', entry, event);
+        }
       }
+
+      // ب: پیام‌های استندبای
       if (entry.standby) {
-        for (const event of entry.standby)
-          await processor.handleMessage(entry, event);
+        for (const event of entry.standby) {
+          // *** تغییر: استفاده از صف ***
+          await queueHandler.addToQueue('standby', entry, event);
+        }
       }
+
+      // ج: کامنت‌ها
       if (entry.changes) {
         for (const change of entry.changes) {
-          if (change.field === 'comments')
-            await processor.handleComment(entry, change);
+          if (change.field === 'comments') {
+            // *** تغییر: استفاده از صف ***
+            await queueHandler.addToQueue('comment', entry, change);
+          }
         }
       }
     }
@@ -131,7 +148,7 @@ io.on('connection', (socket) => {
   });
 });
 
-app.get('/', (req, res) => res.send('Server is Running 🚀'));
+app.get('/', (req, res) => res.send('Server is Running with Redis Queue 🐇'));
 
 server.listen(app.get('port'), () => {
   console.log(`🚀 Server listening on port ${app.get('port')}`);
