@@ -1,123 +1,75 @@
 const IORedis = require('ioredis');
 const url = require('url');
-const dns = require('dns');
-const net = require('net');
-const tls = require('tls');
 
 const connectionString = process.env.REDIS_CONNECTION_STRING;
 
-console.log('🔌 Initializing Redis Configuration (Diagnostic Mode)...');
+console.log('🔌 Initializing Redis Configuration (Strict Mode)...');
 
 let connection;
 
-// تنظیمات BullMQ
-const bullMqRequirements = {
+// تنظیمات مشترک و اجباری BullMQ
+const commonOptions = {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
+  connectTimeout: 10000,
+  retryStrategy(times) {
+    const delay = Math.min(times * 100, 3000);
+    console.log(`♻️ Redis Retry Attempt: ${times}`);
+    return delay;
+  },
 };
-
-// --- توابع تست شبکه (عیب‌یابی) ---
-function runDiagnostics(host, port, isTls) {
-  console.log(`🕵️ DIAGNOSTIC: Starting checks for ${host}:${port}...`);
-
-  // 1. تست DNS
-  dns.lookup(host, (err, address, family) => {
-    if (err) {
-      console.error(
-        `❌ DIAGNOSTIC DNS Error: Could not resolve ${host}`,
-        err.code
-      );
-    } else {
-      console.log(
-        `✅ DIAGNOSTIC DNS Success: ${host} -> ${address} (IPv${family})`
-      );
-
-      // 2. تست اتصال TCP/TLS
-      console.log(
-        `🕵️ DIAGNOSTIC: Attempting raw ${
-          isTls ? 'TLS' : 'TCP'
-        } connection to ${address}:${port}...`
-      );
-      const socket = isTls
-        ? tls.connect(port, address, { servername: host })
-        : net.createConnection(port, address);
-
-      socket.setTimeout(5000);
-
-      socket.on('connect', () => {
-        console.log(
-          '✅ DIAGNOSTIC TCP/TLS Handshake Successful! (Network is OK)'
-        );
-        socket.end();
-      });
-
-      socket.on('secureConnect', () => {
-        // مخصوص TLS
-        console.log('✅ DIAGNOSTIC TLS Secure Connect Successful!');
-        socket.end();
-      });
-
-      socket.on('timeout', () => {
-        console.error(
-          '❌ DIAGNOSTIC Socket Timeout: Firewall is blocking the connection.'
-        );
-        socket.destroy();
-      });
-
-      socket.on('error', (e) => {
-        console.error(`❌ DIAGNOSTIC Socket Error: ${e.code} - ${e.message}`);
-      });
-    }
-  });
-}
 
 if (!connectionString) {
   console.error('❌ REDIS_CONNECTION_STRING is missing.');
-  connection = new IORedis({ ...bullMqRequirements, lazyConnect: true });
+  connection = new IORedis({ lazyConnect: true, ...commonOptions });
 } else {
   try {
     const redisUrl = new url.URL(connectionString);
-    const isTls = connectionString.startsWith('rediss://');
 
-    // اجرای تست شبکه قبل از اتصال اصلی
-    runDiagnostics(redisUrl.hostname, Number(redisUrl.port) || 6380, isTls);
+    // تشخیص اینکه آیا کاربر SSL خواسته یا نه
+    // redis: = بدون SSL (پورت 6379)
+    // rediss: = با SSL (پورت 6380)
+    const useTLS = redisUrl.protocol === 'rediss:';
+
+    console.log(
+      `🎯 Config detected: Protocol=${redisUrl.protocol}, Port=${
+        redisUrl.port || (useTLS ? 6380 : 6379)
+      }`
+    );
 
     const redisOptions = {
       host: redisUrl.hostname,
-      port: Number(redisUrl.port) || 6380,
+      port: Number(redisUrl.port) || (useTLS ? 6380 : 6379),
       password: redisUrl.password,
       username: redisUrl.username || undefined,
-
-      family: 4,
-      tls: isTls
-        ? {
-            servername: redisUrl.hostname,
-            rejectUnauthorized: false, // برای تست سخت‌گیری SSL را کم می‌کنیم
-          }
-        : undefined,
-
-      connectTimeout: 20000,
-      keepAlive: 10000,
-      retryStrategy(times) {
-        const delay = Math.min(times * 500, 5000);
-        console.log(`♻️ IORedis Retrying... Attempt ${times}`);
-        return delay;
-      },
-      ...bullMqRequirements,
+      family: 4, // اجبار به IPv4 برای آژور
+      ...commonOptions,
     };
+
+    // *** نکته حیاتی: فقط اگر rediss بود، آبجکت tls را اضافه کن ***
+    if (useTLS) {
+      console.log('🔒 Enabling TLS/SSL mode...');
+      redisOptions.tls = {
+        servername: redisUrl.hostname,
+        rejectUnauthorized: false,
+      };
+    } else {
+      console.log('🔓 Using Non-SSL mode (Standard)...');
+      // هیچ چیزی به نام tls نباید در آپشن‌ها باشد، حتی null
+      delete redisOptions.tls;
+    }
 
     connection = new IORedis(redisOptions);
   } catch (parseError) {
     console.error('❌ Error parsing Redis URL:', parseError.message);
-    connection = new IORedis({ ...bullMqRequirements, lazyConnect: true });
+    connection = new IORedis({ lazyConnect: true, ...commonOptions });
   }
 }
 
-connection.on('connect', () => console.log('✅ IORedis: Connected!'));
-connection.on('ready', () => console.log('✅ IORedis: Ready!'));
+connection.on('connect', () => console.log('✅ Redis Connected Successfully!'));
 connection.on('error', (err) => {
-  // فقط لاگ کن، کرش نکن
-  console.error(`❌ IORedis Runtime Error: ${err.message}`);
+  // فقط لاگ کن و نگذار سرور کرش کند
+  console.error('❌ Redis Error:', err.message);
 });
 
 module.exports = connection;
