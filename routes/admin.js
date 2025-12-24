@@ -26,18 +26,22 @@ router.get('/stats', async (req, res) => {
       { $group: { _id: null, total: { $sum: '$usage.aiTokensUsed' } } },
     ]);
 
+    // تعداد کل پیام‌ها
+    const messageCount = await MessageLog.countDocuments();
+
     res.json({
       userCount,
       activeSubs: subCount,
       totalRevenue: revenueAgg[0]?.total || 0,
       totalTokens: tokenAgg[0]?.total || 0,
+      messageCount,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// 2. لیست کاربران (با جزئیات اشتراک)
+// 2. لیست کاربران
 router.get('/users', async (req, res) => {
   try {
     const users = await User.find()
@@ -66,12 +70,12 @@ router.get('/users', async (req, res) => {
   }
 });
 
-// 3. لیست تراکنش‌ها (مالی)
+// 3. لیست تراکنش‌ها
 router.get('/transactions', async (req, res) => {
   try {
     const txs = await Transaction.find()
-      .populate('user_id', 'name phone') // نام خریدار
-      .populate('plan_id', 'name') // نام محصول
+      .populate('user_id', 'name phone')
+      .populate('plan_id', 'name')
       .sort({ createdAt: -1 })
       .limit(100);
 
@@ -81,19 +85,16 @@ router.get('/transactions', async (req, res) => {
   }
 });
 
-// 4. ارتقای دستی کاربر (Gift Pro Plan)
+// 4. ارتقای دستی کاربر
 router.put('/users/:id/upgrade', async (req, res) => {
   try {
     const userId = req.params.id;
 
-    // پیدا کردن پلن پرو
     const proPlan = await Plan.findOne({ slug: 'pro_monthly' });
     if (!proPlan) return res.status(404).json({ error: 'Pro Plan not found' });
 
-    // حذف اشتراک قبلی
     await Subscription.deleteMany({ user_id: userId });
 
-    // ایجاد اشتراک ۳۰ روزه
     const endDate = new Date();
     endDate.setDate(endDate.getDate() + 30);
 

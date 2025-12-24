@@ -66,6 +66,8 @@ const personaRoutes = require('./routes/personas');
 const demoRoutes = require('./routes/demo');
 const mediaRoutes = require('./routes/media');
 const supportAgent = require('./routes/support');
+const campaignRoutes = require('./routes/campaigns');
+const adminRoutes = require('./routes/admin');
 
 // --- API ENDPOINTS ---
 app.use('/api/auth', userAuthRoutes);
@@ -81,6 +83,8 @@ app.use('/api/leads', leadsRoutes);
 app.use('/api/personas', personaRoutes);
 app.use('/api/demo', demoRoutes);
 app.use('/api/media', mediaRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/campaigns', campaignRoutes);
 app.use('/api/support', supportAgent);
 
 // --- WEBHOOK VERIFICATION ---
@@ -128,7 +132,7 @@ io.on('connection', (socket) => {
 });
 
 app.get('/', (req, res) => res.send('Server is Running 🚀'));
-app.use('/api/campaigns', require('./routes/campaigns'));
+
 server.listen(app.get('port'), () => {
   console.log(`🚀 Server listening on port ${app.get('port')}`);
 });
