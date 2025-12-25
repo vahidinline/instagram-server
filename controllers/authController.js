@@ -79,6 +79,27 @@ exports.sendOtp = async (req, res) => {
 exports.verifyOtp = async (req, res) => {
   try {
     const { phone, code } = req.body;
+
+    // --- بخش جدید: لاگین تستی (Mock) ---
+    const MOCK_PHONE = '09120000000'; // باید با فرانت یکی باشد
+    const MOCK_CODE = '1234'; // کد ثابت
+
+    if (phone === MOCK_PHONE && code === MOCK_CODE) {
+      // پیدا کردن یا ساختن کاربر تستی
+      let user = await User.findOne({ phone: MOCK_PHONE });
+      if (!user) {
+        user = await User.create({
+          phone: MOCK_PHONE,
+          name: 'کاربر تست',
+          role: 'user',
+        });
+      }
+
+      // تولید توکن واقعی
+      return sendTokenResponse(user, res);
+    }
+    // -----------------------------------
+
     const user = await User.findOne({ phone });
 
     if (!user || user.otp !== code) {
