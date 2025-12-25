@@ -3,7 +3,7 @@ const router = express.Router();
 const axios = require('axios');
 const IGConnections = require('../models/IG-Connections');
 const authMiddleware = require('../middleware/auth');
-
+const { googleLogin } = require('../controllers/authController');
 // 1. ساخت لینک اتصال
 router.get('/connect-url', authMiddleware, (req, res) => {
   const systemUserId = req.user.id;
@@ -123,5 +123,7 @@ router.get('/callback', async (req, res) => {
     );
   }
 });
+
+router.post('/google', googleLogin);
 
 module.exports = router;
