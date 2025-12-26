@@ -1,6 +1,6 @@
 const axios = require('axios');
 const IGConnections = require('../models/IG-Connections');
-const WebConnection = require('../models/WebConnection'); // <--- مدل وب
+const WebConnection = require('../models/WebConnection'); // <--- اضافه شد برای وب
 const Triggers = require('../models/Triggers');
 const Flows = require('../models/Flows');
 const MessageLog = require('../models/MessageLogs');
@@ -19,8 +19,8 @@ async function handleMessage(entry, messaging) {
   // 1. جلوگیری از لوپ (پیام‌های اکو)
   if (messaging.message && messaging.message.is_echo) return;
 
-  const igAccountId = entry.id; // شناسه کانال
-  const senderId = messaging.sender.id; // مشتری
+  const igAccountId = entry.id; // شناسه کانال (اینستا یا وب)
+  const senderId = messaging.sender.id; // شناسه کاربر
   const text = messaging.message?.text;
   const platform = entry.platform || 'instagram'; // <--- تشخیص پلتفرم
 
@@ -29,16 +29,22 @@ async function handleMessage(entry, messaging) {
   console.log(`📥 [${platform}] New Message from ${senderId}: ${text}`);
 
   // 2. بررسی اشتراک و محدودیت (Gatekeeper)
-  // *** اصلاح: پاس دادن پلتفرم به نگهبان ***
+  // پلتفرم را پاس می‌دهیم تا در اشتراک‌منیجر درست جستجو کند
   const quotaCheck = await subManager.checkLimit(igAccountId, platform);
 
   if (!quotaCheck.allowed) {
     console.log(`⛔ Message Blocked: ${quotaCheck.reason}`);
+    // اگر وب بود، ارور را به کاربر نمایش بده
+    if (platform === 'web' && global.io) {
+      global.io
+        .to(`web_${igAccountId}_${senderId}`)
+        .emit('error_message', { message: 'Daily limit reached.' });
+    }
     return;
   }
 
   try {
-    // 3. دریافت اطلاعات اکانت و تنظیمات
+    // 3. دریافت اطلاعات اکانت و تنظیمات بر اساس پلتفرم
     let connection, token, botConfig, aiConfig;
     let isWeb = platform === 'web';
 
@@ -50,18 +56,24 @@ async function handleMessage(entry, messaging) {
         return;
       }
 
-      token = 'WEB_TOKEN';
+      token = 'WEB_TOKEN'; // توکن نمادین برای وب
       botConfig = connection.botConfig || { isActive: true, responseDelay: 0 };
-      // تنظیمات AI برای وب (فعلا دیفالت روشن، یا باید به مدل وب اضافه شود)
-      aiConfig = {
+      // تنظیمات AI برای وب (پیش‌فرض روشن)
+      aiConfig = connection.aiConfig || {
         enabled: true,
-        systemPrompt: 'You are a helpful shop assistant.',
+        systemPrompt: 'You are a helpful assistant.',
       };
+
+      // اگر در ویجت، پیام خوش‌آمدگویی خاصی ست شده بود
+      if (connection.widgetConfig?.welcomeMessage) {
+        aiConfig.systemPrompt = connection.widgetConfig.welcomeMessage;
+      }
     } else {
       // --- حالت اینستاگرام ---
       connection = await IGConnections.findOne({
         ig_userId: igAccountId,
       }).populate('aiConfig.activePersonaId');
+
       if (!connection) {
         console.error('❌ IG Connection not found.');
         return;
@@ -70,20 +82,6 @@ async function handleMessage(entry, messaging) {
       token = connection.access_token;
       botConfig = connection.botConfig || { isActive: true, responseDelay: 0 };
       aiConfig = connection.aiConfig || { enabled: false };
-    }
-
-    // تعیین دستورالعمل سیستم
-    let systemPrompt = 'You are a helpful assistant.';
-    if (!isWeb) {
-      // پرسونا فقط برای اینستاگرام فعلا پیاده شده، برای وب دیفالت میذاریم یا توسعه میدیم
-      if (aiConfig.activePersonaId)
-        systemPrompt = aiConfig.activePersonaId.systemPrompt;
-      else if (aiConfig.systemPrompt) systemPrompt = aiConfig.systemPrompt;
-    } else {
-      // برای وب، اگر پیامی در ویجت کانفیگ بود
-      systemPrompt =
-        connection.widgetConfig?.welcomeMessage ||
-        'You are a helpful assistant.';
     }
 
     // 4. دریافت پروفایل کاربر
@@ -104,7 +102,7 @@ async function handleMessage(entry, messaging) {
       if (isWeb) {
         // در وب نام کاربر مهمان است
         userInfo = {
-          username: `Guest_${senderId.substr(0, 5)}`,
+          username: `Guest_${senderId.slice(-4)}`,
           name: 'Guest User',
           profile_picture: '',
         };
@@ -182,12 +180,20 @@ async function handleMessage(entry, messaging) {
       direction: 'incoming',
       status: 'received',
       sentiment: analysis.sentiment,
+      platform: platform, // ذخیره پلتفرم
     });
 
-    // ارسال به سوکت پنل ادمین (Live Inbox)
+    // ارسال به سوکت (برای نمایش در فرانت پنل و ویجت)
     if (global.io) {
-      // برای وب هم به همان روم اکانت ارسال میکنیم
-      global.io.to(igAccountId).emit('new_message', incomingLog);
+      if (isWeb) {
+        // برای وب: ارسال به روم کاربر برای نمایش تیک/اکو
+        global.io
+          .to(`web_${igAccountId}_${senderId}`)
+          .emit('new_message', incomingLog);
+      } else {
+        // برای اینستا: ارسال به روم ادمین
+        global.io.to(igAccountId).emit('new_message', incomingLog);
+      }
     }
 
     // 7. بررسی وضعیت ربات
@@ -199,6 +205,12 @@ async function handleMessage(entry, messaging) {
 
     if (trigger && trigger.flow_id) {
       console.log(`💡 Trigger Match: [${trigger.keywords.join(', ')}]`);
+
+      // چک کردن قوانین کمپین
+      const campaignCheck = await checkCampaignRules(trigger);
+      if (!campaignCheck) return;
+      const campaign = campaignCheck.campaign;
+
       const flow = await Flows.findById(trigger.flow_id);
 
       if (flow) {
@@ -220,11 +232,16 @@ async function handleMessage(entry, messaging) {
           userInfo,
           text,
           aiConfig,
-          platform
+          platform // <--- مهم
         );
 
         incomingLog.status = 'processed';
         await incomingLog.save();
+
+        if (campaign)
+          await Campaign.findByIdAndUpdate(campaign._id, {
+            $inc: { 'limits.currentReplies': 1 },
+          });
       }
     }
     // 9. هوش مصنوعی خالص
@@ -259,15 +276,21 @@ async function handleMessage(entry, messaging) {
       // نوع کانال برای ابزارهای فروشگاه
       const channelType = isWeb ? 'web' : 'instagram';
 
+      // تعیین پرامپت نهایی
+      let finalSystemPrompt = aiConfig.systemPrompt;
+      if (!isWeb && aiConfig.activePersonaId) {
+        finalSystemPrompt = aiConfig.activePersonaId.systemPrompt;
+      }
+
       const aiResult = await azureService.askAI(
         igAccountId,
         text,
-        systemPrompt,
+        finalSystemPrompt,
         senderData,
         aiConfig,
         history,
         availableFlows,
-        channelType // <--- ارسال نوع کانال
+        channelType // <--- ارسال نوع کانال برای ووکامرس
       );
 
       if (aiResult) {
@@ -320,10 +343,20 @@ async function handleMessage(entry, messaging) {
               content: aiResult.content,
               direction: 'outgoing',
               status: 'replied_ai',
+              platform: platform,
             });
 
-            if (global.io)
-              global.io.to(igAccountId).emit('new_message', replyLog);
+            // ارسال به سوکت صحیح
+            if (global.io) {
+              if (isWeb) {
+                global.io
+                  .to(`web_${igAccountId}_${senderId}`)
+                  .emit('new_message', replyLog);
+              } else {
+                global.io.to(igAccountId).emit('new_message', replyLog);
+              }
+            }
+
             incomingLog.status = 'processed_ai';
             await incomingLog.save();
           }
@@ -357,7 +390,7 @@ async function handleComment(entry, change) {
 
   console.log(`💬 Comment from @${senderUsername}: ${text}`);
 
-  const quotaCheck = await subManager.checkLimit(igAccountId);
+  const quotaCheck = await subManager.checkLimit(igAccountId, 'instagram');
   if (!quotaCheck.allowed) return;
 
   const token = connection.access_token;
@@ -570,8 +603,17 @@ async function executeFlow(
         direction: 'outgoing',
         status: messageType,
         triggered_by: trigger._id || null,
+        platform: platform,
       });
-      if (global.io) global.io.to(igAccountId).emit('new_message', log);
+      if (global.io) {
+        if (platform === 'web') {
+          global.io
+            .to(`web_${igAccountId}_${senderId}`)
+            .emit('new_message', log);
+        } else {
+          global.io.to(igAccountId).emit('new_message', log);
+        }
+      }
     }
   }
   // فقط برای تریگر واقعی افزایش بده

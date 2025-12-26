@@ -1,36 +1,26 @@
 const mongoose = require('mongoose');
 
 const UserSchema = new mongoose.Schema({
-  // --- روش ورود ۱: موبایل ---
   phone: {
     type: String,
     unique: true,
-    sparse: true, // اجازه می‌دهد نال باشد (برای کاربرانی که فقط ایمیل دارند)
+    sparse: true,
   },
-  otp: { type: String },
-  otpExpires: { type: Date },
 
-  // --- روش ورود ۲: گوگل ---
+  // جدید: اضافه کردن ایمیل و گوگل آیدی
   email: {
     type: String,
     unique: true,
-    sparse: true, // اجازه می‌دهد نال باشد (برای کاربرانی که فقط موبایل دارند)
+    sparse: true,
     lowercase: true,
   },
-  googleId: { type: String }, // شناسه یکتای گوگل
+  name: { type: String }, // نام نمایشی گوگل
   avatar: { type: String }, // عکس پروفایل گوگل
 
-  // --- اطلاعات عمومی ---
+  otp: { type: String },
+  otpExpires: { type: Date },
   name: { type: String },
-  role: {
-    type: String,
-    default: 'user',
-    enum: ['user', 'admin'],
-  },
-
-  // ارتباط با پلن‌ها
-  plan: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan' },
-
+  role: { type: String, default: 'user' },
   created_at: { type: Date, default: Date.now },
 });
 

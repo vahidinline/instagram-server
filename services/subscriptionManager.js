@@ -1,57 +1,77 @@
 const IGConnections = require('../models/IG-Connections');
-const WebConnection = require('../models/WebConnection'); // <--- اضافه شد
+const WebConnection = require('../models/WebConnection');
 const Subscription = require('../models/Subscription');
+const Plan = require('../models/Plan'); // <--- نیاز است
 const mongoose = require('mongoose');
 
 const subscriptionManager = {
-  /**
-   * بررسی دسترسی و محدودیت‌ها (مشترک برای وب و اینستاگرام)
-   */
-  checkLimit: async (accountId) => {
-    // console.log(`🛡️ GATEKEEPER: Checking limit for: ${accountId}`);
-
+  checkLimit: async (accountId, platform = 'instagram') => {
     try {
       let userId = null;
 
-      // 1. تلاش برای پیدا کردن در اینستاگرام
-      const igConnection = await IGConnections.findOne({
-        ig_userId: accountId,
-      });
-      if (igConnection) {
-        userId = igConnection.user_id;
-      } else {
-        // 2. تلاش برای پیدا کردن در وب (اگر ID معتبر مونگو باشد)
+      // 1. پیدا کردن صاحب اکانت
+      if (platform === 'web') {
         if (mongoose.Types.ObjectId.isValid(accountId)) {
           const webConnection = await WebConnection.findById(accountId);
-          if (webConnection) {
-            userId = webConnection.user_id;
-          }
+          if (webConnection) userId = webConnection.user_id;
         }
+      } else {
+        const igConnection = await IGConnections.findOne({
+          ig_userId: accountId,
+        });
+        if (igConnection) userId = igConnection.user_id;
       }
 
       if (!userId) {
-        console.error(`❌ GATEKEEPER: Account ${accountId} not found in DB.`);
+        console.error(`❌ Account not found: ${accountId}`);
         return { allowed: false, reason: 'Account not found' };
       }
 
-      // 3. پیدا کردن اشتراک فعال کاربر
-      const sub = await Subscription.findOne({
+      // 2. پیدا کردن اشتراک
+      let sub = await Subscription.findOne({
         user_id: userId,
         status: 'active',
       });
 
+      // *** فیکس خودکار: اگر اشتراک نداشت، همان لحظه بساز ***
       if (!sub) {
-        return { allowed: false, reason: 'No active subscription' };
+        console.log(
+          `⚠️ User ${userId} has no subscription. Creating FREE plan automatically...`
+        );
+
+        // پیدا کردن پلن رایگان یا ساختن آن
+        let freePlan = await Plan.findOne({ slug: 'free' });
+        if (!freePlan) {
+          freePlan = await Plan.create({
+            name: 'Free Plan',
+            slug: 'free',
+            price: 0,
+            limits: { messageCount: 100, aiTokenLimit: 5000 },
+            features: { aiAccess: true },
+          });
+        }
+
+        // ایجاد اشتراک برای کاربر
+        sub = await Subscription.create({
+          user_id: userId,
+          plan_id: freePlan._id,
+          status: 'active',
+          startDate: new Date(),
+          endDate: new Date(
+            new Date().setFullYear(new Date().getFullYear() + 1)
+          ), // 1 سال اعتبار
+          currentLimits: freePlan.limits,
+          currentFeatures: freePlan.features,
+          usage: { messagesUsed: 0, aiTokensUsed: 0 },
+        });
       }
 
-      // 4. چک تاریخ انقضا
+      // 3. چک کردن تاریخ انقضا
       if (new Date() > sub.endDate) {
-        sub.status = 'expired';
-        await sub.save();
         return { allowed: false, reason: 'Subscription expired' };
       }
 
-      // 5. چک سقف مصرف پیام
+      // 4. چک کردن سقف مصرف
       const limit = sub.currentLimits.messageCount;
       const used = sub.usage.messagesUsed;
 
@@ -62,57 +82,36 @@ const subscriptionManager = {
       return { allowed: true, subscription: sub };
     } catch (error) {
       console.error('Gatekeeper Error:', error);
+      // در صورت ارور سرور، موقتا اجازه ندهیم بهتر است یا اجازه دهیم؟ اینجا بلاک می‌کنیم.
       return { allowed: false, reason: 'Server Error' };
     }
   },
 
-  // بررسی دسترسی به ویژگی خاص (مثل AI)
   checkFeatureAccess: (subscription, featureName) => {
-    if (
-      subscription &&
-      subscription.currentFeatures &&
-      subscription.currentFeatures[featureName] === true
-    ) {
-      return true;
-    }
+    if (subscription?.currentFeatures?.[featureName] === true) return true;
     return false;
   },
 
-  // بررسی اعتبار توکن AI
   checkAiLimit: async (subscription) => {
     const limit = subscription.currentLimits.aiTokenLimit || 0;
     const used = subscription.usage.aiTokensUsed || 0;
-
-    if (used >= limit) {
-      console.log(`⛔ AI Token Limit Reached (${used}/${limit})`);
-      return false;
-    }
-    return true;
+    return used < limit;
   },
 
-  // افزایش مصرف توکن
   incrementAiUsage: async (subscriptionId, tokensUsed) => {
     try {
       await Subscription.findByIdAndUpdate(subscriptionId, {
-        $inc: {
-          'usage.messagesUsed': 1,
-          'usage.aiTokensUsed': tokensUsed,
-        },
+        $inc: { 'usage.messagesUsed': 1, 'usage.aiTokensUsed': tokensUsed },
       });
-    } catch (error) {
-      console.error('Usage Increment Error:', error);
-    }
+    } catch (e) {}
   },
 
-  // افزایش مصرف پیام معمولی
   incrementUsage: async (subscriptionId) => {
     try {
       await Subscription.findByIdAndUpdate(subscriptionId, {
         $inc: { 'usage.messagesUsed': 1 },
       });
-    } catch (error) {
-      console.error('Usage Increment Error:', error);
-    }
+    } catch (e) {}
   },
 };
 
