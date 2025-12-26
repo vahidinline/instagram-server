@@ -90,7 +90,7 @@ exports.verifyOtp = async (req, res) => {
       if (!user) {
         user = await User.create({
           phone: MOCK_PHONE,
-          name: 'کاربر تست',
+          name: 'Test User',
           role: 'user',
         });
       }
