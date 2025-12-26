@@ -51,7 +51,7 @@ app.use(
   xhub({ algorithm: 'sha1', secret: process.env.INSTAGRAM_CLIENT_SECRET })
 );
 app.use(bodyParser.json());
-
+app.use(express.static('public'));
 // --- ROUTES IMPORTS ---
 const userAuthRoutes = require('./routes/userAuth');
 const instagramAuthRoutes = require('./routes/auth');
@@ -69,7 +69,7 @@ const mediaRoutes = require('./routes/media');
 const adminRoutes = require('./routes/admin');
 const campaignRoutes = require('./routes/campaigns');
 const supportRoutes = require('./routes/support');
-
+const channelsRoutes = require('./routes/channels');
 // --- API ENDPOINTS ---
 app.use('/api/auth', userAuthRoutes);
 app.use('/auth', instagramAuthRoutes);
@@ -87,6 +87,7 @@ app.use('/api/media', mediaRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/campaigns', campaignRoutes);
 app.use('/api/support', supportRoutes);
+app.use('/api/channels', channelsRoutes);
 
 // --- WEBHOOK VERIFICATION ---
 app.get('/instagram', function (req, res) {

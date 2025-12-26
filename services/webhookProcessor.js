@@ -1,5 +1,6 @@
 const axios = require('axios');
 const IGConnections = require('../models/IG-Connections');
+const WebConnection = require('../models/WebConnection'); // <--- مدل جدید وب
 const Triggers = require('../models/Triggers');
 const Flows = require('../models/Flows');
 const MessageLog = require('../models/MessageLogs');
@@ -8,25 +9,29 @@ const Campaign = require('../models/Campaign');
 const subManager = require('./subscriptionManager');
 const azureService = require('./azureService');
 
-// نسخه پایدار API
+// نسخه پایدار API اینستاگرام
 const GRAPH_URL = 'https://graph.instagram.com/v22.0';
 
 /**
- * 📨 پردازش پیام دایرکت (DM)
+ * 📨 پردازش پیام (مشترک برای اینستاگرام و وب)
  */
 async function handleMessage(entry, messaging) {
   // 1. جلوگیری از لوپ (پیام‌های اکو)
   if (messaging.message && messaging.message.is_echo) return;
 
-  const igAccountId = entry.id;
-  const senderId = messaging.sender.id;
+  const igAccountId = entry.id; // شناسه کانال (یا پیج اینستا یا کانال وب)
+  const senderId = messaging.sender.id; // مشتری
   const text = messaging.message?.text;
+  const platform = entry.platform || 'instagram'; // تشخیص پلتفرم (پیش‌فرض اینستاگرام)
 
   if (!text) return;
 
-  console.log(`📥 New Message from ${senderId}: ${text}`);
+  console.log(
+    `📥 [${platform.toUpperCase()}] New Message from ${senderId}: ${text}`
+  );
 
   // 2. بررسی اشتراک و محدودیت (Gatekeeper)
+  // (چک میکنیم صاحب این کانال اشتراک دارد یا نه)
   const quotaCheck = await subManager.checkLimit(igAccountId);
   if (!quotaCheck.allowed) {
     console.log(`⛔ Message Blocked: ${quotaCheck.reason}`);
@@ -34,45 +39,80 @@ async function handleMessage(entry, messaging) {
   }
 
   try {
-    // 3. دریافت اطلاعات اکانت
-    const connection = await IGConnections.findOne({
-      ig_userId: igAccountId,
-    }).populate('aiConfig.activePersonaId');
+    // 3. دریافت اطلاعات اکانت و تنظیمات (بر اساس پلتفرم)
+    let connection, token, botConfig, aiConfig;
 
-    if (!connection) {
-      console.error('❌ Connection not found in DB.');
-      return;
+    if (platform === 'web') {
+      // --- حالت وب ---
+      connection = await WebConnection.findById(igAccountId); // در وب، ID همان _id دیتابیس است
+      if (!connection) {
+        console.error('❌ Web Connection not found.');
+        return;
+      }
+      token = 'WEB_TOKEN'; // در وب نیاز به توکن متا نداریم
+      botConfig = connection.botConfig || { isActive: true, responseDelay: 0 };
+      // در وب، تنظیمات AI ممکن است در مدل WebConnection باشد یا باید اضافه شود
+      // فعلاً پیش‌فرض فعال در نظر می‌گیریم یا از مدل میخوانیم
+      aiConfig = {
+        enabled: true,
+        systemPrompt: 'You are a helpful shop assistant.',
+      }; // TODO: Add aiConfig to WebConnection schema
+    } else {
+      // --- حالت اینستاگرام ---
+      connection = await IGConnections.findOne({
+        ig_userId: igAccountId,
+      }).populate('aiConfig.activePersonaId');
+      if (!connection) {
+        console.error('❌ IG Connection not found.');
+        return;
+      }
+      token = connection.access_token;
+      botConfig = connection.botConfig || { isActive: true, responseDelay: 0 };
+      aiConfig = connection.aiConfig || { enabled: false };
     }
 
-    const token = connection.access_token;
-    const botConfig = connection.botConfig || {
-      isActive: true,
-      responseDelay: 0,
-    };
-    const aiConfig = connection.aiConfig || { enabled: false };
+    // تعیین دستورالعمل سیستم (System Prompt)
+    let systemPrompt = 'You are a helpful assistant.';
+    if (aiConfig.activePersonaId && aiConfig.activePersonaId.systemPrompt) {
+      systemPrompt = aiConfig.activePersonaId.systemPrompt;
+    } else if (aiConfig.systemPrompt) {
+      systemPrompt = aiConfig.systemPrompt;
+    }
 
-    // 4. دریافت پروفایل کاربر (برای نمایش در اینباکس)
-    let userInfo = {
-      username: 'Instagram User',
-      profile_picture: '',
-      name: '',
-    };
+    // 4. دریافت پروفایل کاربر
+    let userInfo = { username: 'User', profile_picture: '', name: '' };
 
+    // تلاش برای خواندن از کش دیتابیس
     const existingCustomer = await Customer.findOne({
       ig_accountId: igAccountId,
       sender_id: senderId,
     });
+
     if (existingCustomer && existingCustomer.username) {
       userInfo = {
         username: existingCustomer.username,
         name: existingCustomer.fullName,
         profile_picture: existingCustomer.profilePic,
       };
-    } else if (token) {
-      userInfo = await fetchUserProfile(senderId, igAccountId, token);
+    } else {
+      // اگر مشتری جدید است
+      if (platform === 'web') {
+        // در وب، نام کاربر مشخص نیست (مهمان)، یک نام رندوم یا Guest میگذاریم
+        userInfo = {
+          username: `Guest_${senderId.substr(0, 5)}`,
+          name: 'Guest User',
+          profile_picture: '',
+        };
+      } else {
+        // در اینستاگرام، از API میگیریم
+        if (token)
+          userInfo = await fetchUserProfile(senderId, igAccountId, token);
+      }
     }
 
+    // ==================================================
     // 5. تحلیل هوشمند CRM و پایپ‌لاین 📊
+    // ==================================================
     let analysis = {
       sentiment: 'neutral',
       tags: [],
@@ -85,6 +125,7 @@ async function handleMessage(entry, messaging) {
     );
     const currentStage = existingCustomer ? existingCustomer.stage : 'lead';
 
+    // تحلیل فقط برای کاربران Pro و پیام‌های معنی‌دار
     if (hasAiAccess && text.length > 2) {
       try {
         analysis = await azureService.analyzeMessage(text, currentStage);
@@ -93,7 +134,7 @@ async function handleMessage(entry, messaging) {
       }
     }
 
-    // آپدیت پروفایل مشتری
+    // آپدیت پروفایل مشتری (CRM)
     try {
       let updateQuery = {
         $set: {
@@ -146,6 +187,7 @@ async function handleMessage(entry, messaging) {
       sentiment: analysis.sentiment,
     });
 
+    // ارسال به سوکت پنل ادمین (Live Inbox)
     if (global.io) {
       global.io.to(igAccountId).emit('new_message', incomingLog);
     }
@@ -154,53 +196,223 @@ async function handleMessage(entry, messaging) {
     if (botConfig.isActive === false) return;
 
     // 8. جستجوی تریگر
+    // (در وب مدیا آی‌دی نداریم، پس null است)
     const trigger = await findMatchingTrigger(igAccountId, text, 'dm', null);
 
     if (trigger && trigger.flow_id) {
       console.log(`💡 Trigger Match: [${trigger.keywords.join(', ')}]`);
 
-      // *** بررسی قوانین کمپین ***
+      // بررسی قوانین کمپین (اگر تریگر مال کمپین باشد)
       const campaignCheck = await checkCampaignRules(trigger);
-      if (!campaignCheck) return; // اگر قوانین کمپین اجازه نداد، خارج شو
-
+      if (!campaignCheck) return;
       const campaign = campaignCheck.campaign;
 
-      // اجرای فلو (با تابع کمکی)
-      await executeFlow(
-        trigger,
-        igAccountId,
-        senderId,
-        token,
-        botConfig,
-        quotaCheck,
-        userInfo,
-        text,
-        aiConfig
-      );
+      const flow = await Flows.findById(trigger.flow_id);
 
-      // آپدیت وضعیت پیام ورودی
-      incomingLog.status = 'processed';
-      await incomingLog.save();
+      if (flow) {
+        // تاخیر پاسخ
+        if (botConfig.responseDelay > 0) {
+          await new Promise((r) =>
+            setTimeout(r, botConfig.responseDelay * 1000)
+          );
+        }
 
-      // افزایش آمار کمپین (اگر وجود داشت)
-      if (campaign) {
-        await Campaign.findByIdAndUpdate(campaign._id, {
-          $inc: { 'limits.currentReplies': 1 },
+        // ارسال پیام‌های فلو
+        for (const msg of flow.messages) {
+          let contentToSend = msg.content;
+          let messageType = 'replied';
+          let tokensUsed = 0;
+
+          // فلوهای ترکیبی (Hybrid AI)
+          if (msg.type === 'ai_response') {
+            if (!hasAiAccess) continue;
+            const hasTokens = await subManager.checkAiLimit(
+              quotaCheck.subscription
+            );
+            if (!hasTokens) continue;
+
+            const hybridPrompt = msg.content
+              ? `${systemPrompt}\n\nTask: ${msg.content}`
+              : systemPrompt;
+
+            const senderData = {
+              id: senderId,
+              username: userInfo.username,
+              fullname: userInfo.name,
+            };
+
+            // فراخوانی AI (با پشتیبانی از ابزارهای فروشگاه اگر پلتفرم وب باشد)
+            const channelType = platform === 'web' ? 'web' : 'instagram';
+
+            const aiResult = await azureService.askAI(
+              igAccountId,
+              text,
+              hybridPrompt,
+              senderData,
+              aiConfig,
+              [], // history
+              [], // availableFlows
+              channelType // <--- پارامتر جدید برای تشخیص ابزارهای فروشگاه
+            );
+
+            if (!aiResult || !aiResult.content) continue;
+
+            contentToSend = aiResult.content;
+            tokensUsed = aiResult.usage?.total_tokens || 0;
+            messageType = 'replied_ai';
+          }
+
+          // ارسال نهایی (اینجا تفاوت پلتفرم هندل می‌شود)
+          const sent = await sendReply(
+            igAccountId,
+            senderId,
+            { ...msg._doc, content: contentToSend },
+            token,
+            platform
+          );
+
+          if (sent) {
+            // کسر اعتبار
+            if (tokensUsed > 0) {
+              await subManager.incrementAiUsage(
+                quotaCheck.subscription._id,
+                tokensUsed
+              );
+            } else if (messageType !== 'replied_ai') {
+              await subManager.incrementUsage(quotaCheck.subscription._id);
+            }
+
+            // لاگ خروجی
+            const replyLog = await MessageLog.create({
+              ig_accountId: igAccountId,
+              sender_id: senderId,
+              sender_username: userInfo.name || userInfo.username,
+              sender_avatar: userInfo.profile_picture,
+              content: contentToSend || `[${msg.type.toUpperCase()}]`,
+              direction: 'outgoing',
+              status: messageType,
+              triggered_by: trigger._id,
+            });
+
+            // ارسال به پنل ادمین
+            if (global.io)
+              global.io.to(igAccountId).emit('new_message', replyLog);
+          }
+        }
+
+        // آمار کمپین و فلو
+        if (campaign)
+          await Campaign.findByIdAndUpdate(campaign._id, {
+            $inc: { 'limits.currentReplies': 1 },
+          });
+        await Flows.findByIdAndUpdate(trigger.flow_id, {
+          $inc: { usage_count: 1 },
         });
+
+        incomingLog.status = 'processed';
+        await incomingLog.save();
       }
     }
-    // 9. هوش مصنوعی خالص (AI Agentic)
+    // 9. هوش مصنوعی خالص (AI Only)
     else if (aiConfig.enabled) {
-      await handleAIResponse(
+      if (!hasAiAccess) return;
+      const hasTokens = await subManager.checkAiLimit(quotaCheck.subscription);
+      if (!hasTokens) {
+        console.log('⛔ AI Token Limit Reached.');
+        return;
+      }
+
+      console.log('🤖 Asking AI...');
+
+      const senderData = {
+        id: senderId,
+        username: userInfo.username,
+        fullname: userInfo.name,
+      };
+
+      // تاریخچه چت
+      const history = await getChatHistory(
         igAccountId,
         senderId,
-        text,
-        token,
-        aiConfig,
-        quotaCheck,
-        userInfo,
-        incomingLog
+        incomingLog._id
       );
+      // لیست فلوها
+      const availableFlows = await Flows.find({
+        ig_accountId: igAccountId,
+      }).select('name');
+
+      // نوع کانال برای ابزارهای فروشگاه
+      const channelType = platform === 'web' ? 'web' : 'instagram';
+
+      const aiResult = await azureService.askAI(
+        igAccountId,
+        text,
+        systemPrompt,
+        senderData,
+        aiConfig,
+        history,
+        availableFlows,
+        channelType // <--- ارسال نوع کانال
+      );
+
+      if (aiResult) {
+        if (aiResult.usage?.total_tokens) {
+          await subManager.incrementAiUsage(
+            quotaCheck.subscription._id,
+            aiResult.usage.total_tokens
+          );
+        }
+
+        // حالت الف: AI دستور اجرای فلو داد
+        if (aiResult.action === 'trigger_flow') {
+          const targetFlow = await Flows.findOne({
+            ig_accountId: igAccountId,
+            name: aiResult.flowName,
+          });
+          if (targetFlow) {
+            console.log(`🤖 AI Triggered Flow: ${targetFlow.name}`);
+            await executeFlow(
+              { flow_id: targetFlow._id },
+              igAccountId,
+              senderId,
+              token,
+              botConfig,
+              quotaCheck,
+              userInfo,
+              text,
+              aiConfig,
+              platform
+            );
+          }
+        }
+        // حالت ب: پاسخ متنی معمولی
+        else if (aiResult.content) {
+          const sent = await sendReply(
+            igAccountId,
+            senderId,
+            { content: aiResult.content, type: 'text' },
+            token,
+            platform
+          );
+
+          if (sent) {
+            const replyLog = await MessageLog.create({
+              ig_accountId: igAccountId,
+              sender_id: senderId,
+              sender_username: userInfo.name || userInfo.username,
+              sender_avatar: userInfo.profile_picture,
+              content: aiResult.content,
+              direction: 'outgoing',
+              status: 'replied_ai',
+            });
+
+            if (global.io)
+              global.io.to(igAccountId).emit('new_message', replyLog);
+            incomingLog.status = 'processed_ai';
+            await incomingLog.save();
+          }
+        }
+      }
     }
   } catch (error) {
     console.error('❌ Error in handleMessage:', error.message);
@@ -208,7 +420,7 @@ async function handleMessage(entry, messaging) {
 }
 
 /**
- * 💬 پردازش کامنت (با قابلیت دایرکت خصوصی و لینک مدیا)
+ * 💬 پردازش کامنت (اینستاگرام)
  */
 async function handleComment(entry, change) {
   const igAccountId = entry.id;
@@ -218,7 +430,7 @@ async function handleComment(entry, change) {
   const senderId = comment.from?.id;
   const senderUsername = comment.from?.username;
 
-  // مدیا آی‌دی برای کمپین‌ها
+  // مدیا آی‌دی
   const mediaId = comment.media?.id;
 
   if (!text || !senderId) return;
@@ -244,7 +456,6 @@ async function handleComment(entry, change) {
   );
 
   if (trigger && trigger.flow_id) {
-    // *** بررسی قوانین کمپین ***
     const campaignCheck = await checkCampaignRules(trigger);
     if (!campaignCheck) return;
     const campaign = campaignCheck.campaign;
@@ -267,25 +478,12 @@ async function handleComment(entry, change) {
         }
       }
 
-      // ب) آماده‌سازی متن دایرکت (برای جلوگیری از ارور متن خالی)
-      const firstMsg = flow.messages[0];
-      let messageToSend = firstMsg.content;
-
-      // اگر متن خالی بود (مثل کاروسل)، یک متن جایگزین بساز
+      // ب) دایرکت خصوصی
+      let messageToSend = flow.messages[0].content;
       if (!messageToSend) {
-        if (
-          firstMsg.type === 'card' &&
-          firstMsg.cards &&
-          firstMsg.cards.length > 0
-        ) {
-          messageToSend =
-            `👇 لیست موارد پیشنهادی:\n\n` +
-            firstMsg.cards.map((c) => `🔹 ${c.title}`).join('\n');
-        } else if (firstMsg.type === 'image' || firstMsg.type === 'video') {
-          messageToSend = 'یک فایل برای شما ارسال شد 👇';
-        } else {
-          messageToSend = 'پاسخ خودکار';
-        }
+        if (flow.messages[0].type === 'card')
+          messageToSend = 'لیست پیشنهادات 👇';
+        else messageToSend = 'پاسخ خودکار';
       }
 
       if (botConfig.checkFollow) {
@@ -294,17 +492,14 @@ async function handleComment(entry, change) {
         }\n\n👇👇👇\n${messageToSend}`;
       }
 
-      // لینک دکمه‌ها و مدیا را بچسبان (چون در دایرکتِ کامنت کاروسل کامل ارسال نمی‌شود)
-      if (firstMsg.buttons && firstMsg.buttons.length > 0) {
+      if (flow.messages[0].buttons && flow.messages[0].buttons.length > 0) {
         messageToSend +=
           '\n\n🔗 لینک‌ها:\n' +
-          firstMsg.buttons.map((b) => `${b.title}: ${b.url}`).join('\n');
-      }
-      if (firstMsg.media_url) {
-        messageToSend += `\n\n📥 فایل: ${firstMsg.media_url}`;
+          flow.messages[0].buttons
+            .map((b) => `${b.title}: ${b.url}`)
+            .join('\n');
       }
 
-      // ج) ارسال دایرکت خصوصی
       try {
         await axios.post(
           `${GRAPH_URL}/me/messages`,
@@ -324,7 +519,6 @@ async function handleComment(entry, change) {
           });
         }
 
-        // ثبت لاگ
         const replyLog = await MessageLog.create({
           ig_accountId: igAccountId,
           sender_id: senderId,
@@ -344,25 +538,19 @@ async function handleComment(entry, change) {
 }
 
 // ----------------------------------------------------------------
-// توابع کمکی (Helpers)
+// توابع کمکی
 // ----------------------------------------------------------------
 
-// 1. بررسی قوانین کمپین (استخراج شده به عنوان تابع مستقل)
 async function checkCampaignRules(trigger) {
-  if (!trigger.campaign_id) return { allowed: true, campaign: null }; // تریگر معمولی
+  if (!trigger.campaign_id) return { allowed: true, campaign: null };
 
   const campaign = await Campaign.findById(trigger.campaign_id);
-  if (!campaign) return { allowed: true, campaign: null }; // کمپین پاک شده
+  if (!campaign) return { allowed: true, campaign: null };
 
   const now = new Date();
 
-  // بررسی وضعیت
-  if (campaign.status !== 'active') {
-    console.log(`⛔ Campaign Paused/Ended: ${campaign.name}`);
-    return false;
-  }
+  if (campaign.status !== 'active') return false;
 
-  // بررسی تاریخ
   if (
     campaign.schedule.startDate &&
     now < new Date(campaign.schedule.startDate)
@@ -371,7 +559,6 @@ async function checkCampaignRules(trigger) {
   if (campaign.schedule.endDate && now > new Date(campaign.schedule.endDate))
     return false;
 
-  // بررسی ساعت روزانه
   const currentHours =
     now.getHours().toString().padStart(2, '0') +
     ':' +
@@ -384,7 +571,6 @@ async function checkCampaignRules(trigger) {
       return false;
   }
 
-  // بررسی سقف تعداد
   if (
     campaign.limits.maxReplies > 0 &&
     campaign.limits.currentReplies >= campaign.limits.maxReplies
@@ -394,7 +580,6 @@ async function checkCampaignRules(trigger) {
   return { allowed: true, campaign };
 }
 
-// 2. اجرای فلو (برای استفاده توسط تریگر و AI)
 async function executeFlow(
   trigger,
   igAccountId,
@@ -404,7 +589,8 @@ async function executeFlow(
   quotaCheck,
   userInfo,
   userText,
-  aiConfig
+  aiConfig,
+  platform = 'instagram'
 ) {
   const flow = await Flows.findById(trigger.flow_id || trigger.flowId);
   if (!flow) return;
@@ -415,16 +601,8 @@ async function executeFlow(
   for (const msg of flow.messages) {
     let contentToSend = msg.content;
     let messageType = 'replied';
-    let tokensUsed = 0;
 
-    // Hybrid Flow (AI)
     if (msg.type === 'ai_response') {
-      const hasAccess = subManager.checkFeatureAccess(
-        quotaCheck.subscription,
-        'aiAccess'
-      );
-      if (!hasAccess) continue;
-
       const hasTokens = await subManager.checkAiLimit(quotaCheck.subscription);
       if (!hasTokens) continue;
 
@@ -436,9 +614,8 @@ async function executeFlow(
         ? `${systemPrompt}\n\nTask: ${msg.content}`
         : systemPrompt;
       const senderData = { id: senderId, username: userInfo.username };
+      const channelType = platform === 'web' ? 'web' : 'instagram';
 
-      // دریافت پاسخ از AI
-      // لیست فلوها را خالی میفرستیم تا لوپ نشود
       const aiResult = await azureService.askAI(
         igAccountId,
         userText,
@@ -446,27 +623,29 @@ async function executeFlow(
         senderData,
         aiConfig,
         [],
-        []
+        [],
+        channelType
       );
 
       if (!aiResult?.content) continue;
-
       contentToSend = aiResult.content;
-      tokensUsed = aiResult.usage?.total_tokens || 0;
-      if (tokensUsed > 0)
+      if (aiResult.usage?.total_tokens)
         await subManager.incrementAiUsage(
           quotaCheck.subscription._id,
-          tokensUsed
+          aiResult.usage.total_tokens
         );
       messageType = 'replied_ai';
     }
 
+    // ارسال پیام با پلتفرم صحیح
     const sent = await sendReply(
       igAccountId,
       senderId,
       { ...msg._doc, content: contentToSend },
-      token
+      token,
+      platform
     );
+
     if (sent) {
       if (messageType !== 'replied_ai')
         await subManager.incrementUsage(quotaCheck.subscription._id);
@@ -484,115 +663,11 @@ async function executeFlow(
       if (global.io) global.io.to(igAccountId).emit('new_message', log);
     }
   }
-  await Flows.findByIdAndUpdate(flow._id, { $inc: { usage_count: 1 } });
+  // فقط برای تریگر واقعی افزایش بده نه هوش مصنوعی
+  if (trigger._id)
+    await Flows.findByIdAndUpdate(flow._id, { $inc: { usage_count: 1 } });
 }
 
-// 3. هندل کردن پاسخ AI خالص
-async function handleAIResponse(
-  igAccountId,
-  senderId,
-  text,
-  token,
-  aiConfig,
-  quotaCheck,
-  userInfo,
-  incomingLog
-) {
-  if (!subManager.checkFeatureAccess(quotaCheck.subscription, 'aiAccess'))
-    return;
-
-  const hasTokens = await subManager.checkAiLimit(quotaCheck.subscription);
-  if (!hasTokens) {
-    console.log('⛔ AI Token Limit Reached.');
-    return;
-  }
-
-  console.log('🤖 Asking AI...');
-
-  let systemPrompt =
-    aiConfig.activePersonaId?.systemPrompt ||
-    aiConfig.systemPrompt ||
-    'You are helpful.';
-  const senderData = {
-    id: senderId,
-    username: userInfo.username,
-    fullname: userInfo.name,
-  };
-
-  const history = await getChatHistory(igAccountId, senderId, incomingLog._id);
-  const availableFlows = await Flows.find({ ig_accountId: igAccountId }).select(
-    'name'
-  );
-
-  const aiResult = await azureService.askAI(
-    igAccountId,
-    text,
-    systemPrompt,
-    senderData,
-    aiConfig,
-    history,
-    availableFlows
-  );
-
-  if (aiResult) {
-    if (aiResult.usage?.total_tokens) {
-      await subManager.incrementAiUsage(
-        quotaCheck.subscription._id,
-        aiResult.usage.total_tokens
-      );
-    }
-
-    // حالت الف: AI دستور اجرای فلو داد
-    if (aiResult.action === 'trigger_flow') {
-      const targetFlow = await Flows.findOne({
-        ig_accountId: igAccountId,
-        name: aiResult.flowName,
-      });
-      if (targetFlow) {
-        console.log(`🤖 AI Triggered Flow: ${targetFlow.name}`);
-        const botConfig = { isActive: true, responseDelay: 0 };
-        await executeFlow(
-          { flow_id: targetFlow._id },
-          igAccountId,
-          senderId,
-          token,
-          botConfig,
-          quotaCheck,
-          userInfo,
-          text,
-          aiConfig
-        );
-      }
-    }
-    // حالت ب: پاسخ متنی معمولی
-    else if (aiResult.content) {
-      const sent = await sendReply(
-        igAccountId,
-        senderId,
-        { content: aiResult.content, type: 'text' },
-        token
-      );
-
-      if (sent) {
-        const replyLog = await MessageLog.create({
-          ig_accountId: igAccountId,
-          sender_id: senderId,
-          sender_username: userInfo.name || userInfo.username,
-          sender_avatar: userInfo.profile_picture,
-          content: aiResult.content,
-          direction: 'outgoing',
-          status: 'replied_ai',
-        });
-
-        if (global.io) global.io.to(igAccountId).emit('new_message', replyLog);
-        incomingLog.status = 'processed_ai';
-        await incomingLog.save();
-      }
-    }
-  }
-}
-
-// 4. دریافت تاریخچه
 async function getChatHistory(igAccountId, senderId, currentMsgId) {
   try {
     const logs = await MessageLog.find({
@@ -612,7 +687,6 @@ async function getChatHistory(igAccountId, senderId, currentMsgId) {
   }
 }
 
-// 5. دریافت پروفایل
 async function fetchUserProfile(senderId, myIgId, token) {
   try {
     const userRes = await axios.get(`${GRAPH_URL}/${senderId}`, {
@@ -642,7 +716,6 @@ async function fetchUserProfile(senderId, myIgId, token) {
   }
 }
 
-// 6. جستجوی تریگر
 async function findMatchingTrigger(igAccountId, text, type, mediaId = null) {
   if (!text) return null;
   const allTriggers = await Triggers.find({
@@ -670,9 +743,42 @@ async function findMatchingTrigger(igAccountId, text, type, mediaId = null) {
   return null;
 }
 
-// 7. ارسال پیام
-async function sendReply(myId, recipientId, messageData, token) {
+// *** تابع ارسال پیام هوشمند (پشتیبانی از اینستاگرام و وب) ***
+async function sendReply(
+  accountId,
+  recipientId,
+  messageData,
+  token,
+  platform = 'instagram'
+) {
   try {
+    // --- 1. ارسال به وب (سوکت) ---
+    if (platform === 'web') {
+      const roomName = `web_${accountId}_${recipientId}`;
+      console.log(`📤 Sending to Web Socket: ${roomName}`);
+
+      // اگر کاروسل بود، لیست محصولات را میفرستیم
+      // اگر متن بود، محتوا را
+
+      let socketPayload = {
+        direction: 'outgoing',
+        content: messageData.content,
+        message_type: messageData.type,
+        // اگر کاروسل است، آرایه کاردها را بفرست
+        products: messageData.type === 'card' ? messageData.cards : null,
+        // اگر عکس است
+        media_url: messageData.media_url,
+      };
+
+      if (global.io) {
+        global.io.to(roomName).emit('new_message', socketPayload);
+        console.log('✅ Web Reply Emitted.');
+        return true;
+      }
+      return false;
+    }
+
+    // --- 2. ارسال به اینستاگرام (Graph API) ---
     let payload = { recipient: { id: recipientId }, message: {} };
 
     switch (messageData.type) {
@@ -745,7 +851,7 @@ async function sendReply(myId, recipientId, messageData, token) {
     await axios.post(`${GRAPH_URL}/me/messages`, payload, {
       params: { access_token: token },
     });
-    console.log('✅ Reply Sent.');
+    console.log('✅ IG Reply Sent.');
     return true;
   } catch (e) {
     console.error('❌ Send Error:', e.response?.data || e.message);

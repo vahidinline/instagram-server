@@ -3,9 +3,11 @@ const { AzureKeyCredential } = require('@azure/core-auth');
 const { SearchIndexClient, SearchClient } = require('@azure/search-documents');
 const crypto = require('crypto');
 const Lead = require('../models/Lead');
+const WebConnection = require('../models/WebConnection'); // <--- جدید
+const wooService = require('./wooService'); // <--- جدید
 
 console.log(
-  '🟢 AZURE SERVICE v13 - ULTIMATE (TONE + CRM + LEADS + RAG) LOADED'
+  '🟢 AZURE SERVICE v14 - ULTIMATE (WOOCOMMERCE + RAG + CRM + TOOLS) LOADED'
 );
 
 // --- CONFIGURATION ---
@@ -41,7 +43,7 @@ const searchClient = new SearchClient(
   new AzureKeyCredential(searchKey)
 );
 
-// 3. ابزارهای پایه (لید جنریشن)
+// 3. ابزارهای پایه (لید جنریشن) - همیشه فعال
 const baseTools = [
   {
     type: 'function',
@@ -63,6 +65,43 @@ const baseTools = [
           },
         },
         required: ['phone'],
+      },
+    },
+  },
+];
+
+// 4. ابزارهای فروشگاه (ووکامرس) - فقط برای کانال وب فعال می‌شود
+const shopTools = [
+  {
+    type: 'function',
+    function: {
+      name: 'check_product_stock',
+      description:
+        'Search for products in the online store to check price, stock, and details.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: "Product name or keyword (e.g. 'کفش نایک')",
+          },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'track_order',
+      description:
+        'Check the status of an order using Order ID provided by the user.',
+      parameters: {
+        type: 'object',
+        properties: {
+          order_id: { type: 'string', description: 'The numeric order ID' },
+        },
+        required: ['order_id'],
       },
     },
   },
@@ -172,19 +211,15 @@ const azureService = {
   },
 
   /**
-   * آنالیز لحن (Tone Cloning) 🎭
-   * (این همان تابعی بود که جا افتاده بود)
+   * آنالیز لحن (Tone Cloning)
    */
   analyzeTone: async (samples) => {
     try {
       const systemPrompt = `
-      You are an expert Linguist. Analyze these Persian messages from a business owner.
-      Extract their unique writing style, tone, emoji usage, and sentence structure.
-
+      You are an expert Linguist. Analyze these Persian messages.
+      Extract unique writing style, tone, emoji usage, and sentence structure.
       OUTPUT JSON ONLY:
-      {
-        "generatedSystemPrompt": "Write a prompt (in Persian) that instructs an AI to mimic this exact persona. Include details like: 'Use these specific catchphrases...', 'Use emojis like...', 'Be formal/informal...'"
-      }
+      { "generatedSystemPrompt": "Write a prompt (in Persian) that instructs an AI to mimic this exact persona..." }
       `;
 
       const userContent = `Samples:\n${samples
@@ -210,7 +245,7 @@ const azureService = {
   },
 
   /**
-   * تحلیل هوشمند پیام (CRM Intelligence) 📊
+   * تحلیل هوشمند پیام (CRM Intelligence)
    */
   analyzeMessage: async (text, currentStage = 'lead') => {
     try {
@@ -250,7 +285,7 @@ const azureService = {
   },
 
   /**
-   * جستجو و پاسخ هوشمند (RAG + Tools + Memory + Flows) 🤖
+   * جستجو و پاسخ هوشمند (RAG + Tools + Memory + Flows + WooCommerce)
    */
   askAI: async (
     igAccountId,
@@ -259,38 +294,19 @@ const azureService = {
     senderData = {},
     aiConfig = {},
     history = [],
-    availableFlows = []
+    availableFlows = [],
+    channelType = 'instagram'
   ) => {
     try {
       let totalUsage = 0;
-
-      // 1. وکتور کردن سوال (هزینه دارد)
-      const { vector, usage: embedUsage } = await azureService.getEmbedding(
-        userQuery
-      );
-      totalUsage += embedUsage;
-
-      // 2. جستجو در آژور سرچ
-      const searchResults = await searchClient.search(userQuery, {
-        vectorQueries: [
-          { vector: vector, k: 5, fields: ['contentVector'], kind: 'vector' },
-        ],
-        filter: `ig_accountId eq '${igAccountId}'`,
-        select: ['content', 'title'],
-      });
-
-      let context = '';
-      for await (const result of searchResults.results) {
-        context += `[Source: ${result.document.title}]\n${result.document.content}\n---\n`;
-      }
-
-      if (!context) console.log('⚠️ No context found in KB.');
-
       const strictMode = aiConfig.strictMode ?? false;
       const temperature = aiConfig.creativity ?? 0.5;
 
-      // اضافه کردن ابزار اجرای فلو به لیست ابزارها
+      // 1. آماده‌سازی ابزارها (Tools)
       let dynamicTools = [...baseTools];
+      let webConnection = null;
+
+      // الف: افزودن ابزار اجرای فلو
       if (availableFlows.length > 0) {
         dynamicTools.push({
           type: 'function',
@@ -305,7 +321,6 @@ const azureService = {
                 flow_name: {
                   type: 'string',
                   enum: availableFlows.map((f) => f.name),
-                  description: 'The name of the flow to trigger',
                 },
               },
               required: ['flow_name'],
@@ -314,8 +329,37 @@ const azureService = {
         });
       }
 
+      // ب: افزودن ابزارهای فروشگاه (فقط برای وب)
+      if (channelType === 'web') {
+        // در وب، igAccountId همان شناسه کانال وب است
+        webConnection = await WebConnection.findById(igAccountId);
+        if (webConnection && webConnection.platform === 'woocommerce') {
+          dynamicTools = [...dynamicTools, ...shopTools];
+        }
+      }
+
+      // 2. RAG (جستجو در دیتابیس متنی)
+      const { vector, usage: embedUsage } = await azureService.getEmbedding(
+        userQuery
+      );
+      totalUsage += embedUsage;
+
+      const searchResults = await searchClient.search(userQuery, {
+        vectorQueries: [
+          { vector: vector, k: 5, fields: ['contentVector'], kind: 'vector' },
+        ],
+        filter: `ig_accountId eq '${igAccountId}'`,
+        select: ['content', 'title'],
+      });
+
+      let context = '';
+      for await (const result of searchResults.results) {
+        context += `[Source: ${result.document.title}]\n${result.document.content}\n---\n`;
+      }
+
+      // 3. ساخت پرامپت
       let promptLogic = strictMode
-        ? "Answer ONLY using the provided Context. If not found, say 'اطلاعاتی ندارم'."
+        ? 'Answer ONLY using the provided Context.'
         : 'Use Context as primary source. Use general knowledge if needed.';
 
       const finalSystemPrompt = `${systemInstruction}\n\n${promptLogic}\n\nCONTEXT FROM KNOWLEDGE BASE:\n${context}\n\nIMPORTANT: If user gives phone number, ALWAYS use 'save_lead_info'.`;
@@ -326,7 +370,7 @@ const azureService = {
         { role: 'user', content: userQuery },
       ];
 
-      // 3. درخواست به GPT
+      // 4. درخواست به GPT
       const response = await openai.chat.completions.create({
         model: chatDeployment,
         messages: messages,
@@ -339,14 +383,14 @@ const azureService = {
       const choice = response.choices[0];
       const message = choice.message;
 
-      // 4. هندل کردن ابزارها
+      // 5. هندل کردن ابزارها (Function Calling)
       if (message.tool_calls && message.tool_calls.length > 0) {
         const toolCall = message.tool_calls[0];
         const args = JSON.parse(toolCall.function.arguments);
+        let functionResult = null;
 
-        // الف: لید جنریشن
+        // --- ابزار ۱: لید جنریشن ---
         if (toolCall.function.name === 'save_lead_info') {
-          console.log('🎣 AI Lead Capture:', args);
           try {
             await Lead.create({
               ig_accountId,
@@ -355,16 +399,44 @@ const azureService = {
               interest_product: args.product,
               ...senderData,
             });
-          } catch (e) {
-            console.log('Lead DB Error:', e.message);
-          }
+          } catch (e) {}
+          functionResult = { success: true, message: 'Lead Saved' };
+        }
 
-          // ادامه مکالمه
-          messages.push(message);
+        // --- ابزار ۲: اجرای فلو ---
+        else if (toolCall.function.name === 'trigger_flow') {
+          return {
+            action: 'trigger_flow',
+            flowName: args.flow_name,
+            usage: { total_tokens: totalUsage },
+          };
+        }
+
+        // --- ابزار ۳: جستجوی محصول (فروشگاه) ---
+        else if (toolCall.function.name === 'check_product_stock') {
+          console.log('🛍️ Checking Stock:', args.query);
+          functionResult = await wooService.searchProducts(
+            webConnection,
+            args.query
+          );
+        }
+
+        // --- ابزار ۴: پیگیری سفارش (فروشگاه) ---
+        else if (toolCall.function.name === 'track_order') {
+          console.log('📦 Tracking Order:', args.order_id);
+          functionResult = await wooService.getOrderStatus(
+            webConnection,
+            args.order_id
+          );
+        }
+
+        // ارسال نتیجه ابزار به GPT برای تولید پاسخ نهایی
+        if (functionResult) {
+          messages.push(message); // اضافه کردن درخواست ابزار
           messages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
-            content: JSON.stringify({ success: true, message: 'Lead Saved' }),
+            content: JSON.stringify(functionResult),
           });
 
           const finalRes = await openai.chat.completions.create({
@@ -376,17 +448,7 @@ const azureService = {
           return {
             content: finalRes.choices[0].message.content,
             usage: { total_tokens: totalUsage },
-            leadCaptured: true,
-          };
-        }
-
-        // ب: اجرای فلو (Flow Triggering)
-        else if (toolCall.function.name === 'trigger_flow') {
-          console.log(`🤖 AI Triggering Flow: ${args.flow_name}`);
-          return {
-            action: 'trigger_flow',
-            flowName: args.flow_name,
-            usage: { total_tokens: totalUsage },
+            leadCaptured: toolCall.function.name === 'save_lead_info',
           };
         }
       }
@@ -397,13 +459,13 @@ const azureService = {
         leadCaptured: false,
       };
     } catch (e) {
-      console.error('AI Generation Error:', e.message);
+      console.error('AI Error:', e.message);
       return null;
     }
   },
 
   /**
-   * چت ساده (برای دمو)
+   * چت ساده برای دمو
    */
   simpleChat: async (userMessage, systemPrompt) => {
     try {
