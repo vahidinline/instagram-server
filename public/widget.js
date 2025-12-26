@@ -142,7 +142,7 @@
   container.innerHTML = `
         <div id="bb-chat-window">
             <div id="bb-header">
-                <span>پشتیبانی هوشمند</span>
+                <span>پیشتیبان هوشمند ورژن ۲  </span>
                 <span style="cursor:pointer; font-size:18px;" id="bb-close">×</span>
             </div>
             <div id="bb-messages"></div>
