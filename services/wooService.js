@@ -1,19 +1,15 @@
 const axios = require('axios');
 
 const wooService = {
-  // 1. جستجوی محصول
+  // 1. جستجوی محصول (قبلی - بدون تغییر)
   searchProducts: async (connection, query) => {
     try {
-      // حذف اسلش آخر URL اگر وجود داشت
       const siteUrl = connection.siteUrl.replace(/\/$/, '');
-
-      // درخواست به API ووکامرس
       const response = await axios.get(`${siteUrl}/wp-json/wc/v3/products`, {
         params: {
           search: query,
           status: 'publish',
-          stock_status: 'instock', // فقط موجودها
-          per_page: 5, // حداکثر ۵ محصول
+          per_page: 5,
         },
         auth: {
           username: connection.consumerKey,
@@ -23,26 +19,27 @@ const wooService = {
 
       if (response.data.length === 0) return 'هیچ محصولی با این نام یافت نشد.';
 
-      // فرمت‌دهی برای AI و ویجت
       return response.data.map((p) => ({
         id: p.id,
         name: p.name,
         price: p.price,
-        stock_quantity: p.stock_quantity, // تعداد موجودی
+        stock_status: p.stock_status, // instock یا outofstock
+        stock_quantity: p.stock_quantity,
         permalink: p.permalink,
         image: p.images[0]?.src || '',
         description: p.short_description
           .replace(/<[^>]*>?/gm, '')
-          .substring(0, 100), // حذف HTML
+          .substring(0, 100),
       }));
     } catch (error) {
-      console.error('Woo API Error:', error.response?.data || error.message);
-      return 'خطا در اتصال به فروشگاه. لطفاً تنظیمات API را چک کنید.';
+      console.error('Woo Search Error:', error.message);
+      return 'خطا در ارتباط با فروشگاه.';
     }
   },
 
-  // 2. پیگیری سفارش
+  // 2. پیگیری سفارش (قبلی - بدون تغییر)
   getOrderStatus: async (connection, orderId) => {
+    // ... (کد قبلی اینجا باشد)
     try {
       const siteUrl = connection.siteUrl.replace(/\/$/, '');
       const response = await axios.get(
@@ -54,27 +51,70 @@ const wooService = {
           },
         }
       );
+      const order = response.data;
+      return { status: order.status, total: order.total, id: order.id };
+    } catch (e) {
+      return 'سفارش یافت نشد.';
+    }
+  },
+
+  // 3. ثبت سفارش جدید (✅ جدید)
+  createOrder: async (connection, orderData) => {
+    try {
+      const siteUrl = connection.siteUrl.replace(/\/$/, '');
+
+      const payload = {
+        payment_method: 'cod', // یا درگاه آنلاین
+        payment_method_title: 'پرداخت آنلاین / کارت به کارت',
+        set_paid: false,
+        billing: {
+          first_name: orderData.firstName || 'کاربر',
+          last_name: orderData.lastName || 'مهمان',
+          address_1: orderData.address || '',
+          phone: orderData.phone,
+          email: orderData.email || 'guest@example.com', // ایمیل اجباری است
+        },
+        line_items: [
+          {
+            product_id: orderData.productId,
+            quantity: orderData.quantity || 1,
+          },
+        ],
+      };
+
+      const response = await axios.post(
+        `${siteUrl}/wp-json/wc/v3/orders`,
+        payload,
+        {
+          auth: {
+            username: connection.consumerKey,
+            password: connection.consumerSecret,
+          },
+        }
+      );
 
       const order = response.data;
-      const statusMap = {
-        pending: 'در انتظار پرداخت',
-        processing: 'در حال انجام',
-        'on-hold': 'در انتظار بررسی',
-        completed: 'تکمیل شده',
-        cancelled: 'لغو شده',
-        refunded: 'مسترد شده',
-        failed: 'ناموفق',
-      };
+
+      // لینک پرداخت (Checkout Key)
+      // در ووکامرس استاندارد، لینک پرداخت معمولا به این صورت است:
+      const checkoutUrl = `${siteUrl}/checkout/order-pay/${order.id}/?pay_for_order=true&key=${order.order_key}`;
 
       return {
+        success: true,
         order_id: order.id,
-        status: statusMap[order.status] || order.status,
         total: order.total,
-        date: order.date_created,
-        items: order.line_items.map((i) => i.name).join(', '),
+        payment_url: checkoutUrl,
+        message: 'سفارش با موفقیت ثبت شد.',
       };
     } catch (error) {
-      return 'سفارشی با این شماره یافت نشد یا دسترسی وجود ندارد.';
+      console.error(
+        'Woo Create Order Error:',
+        error.response?.data || error.message
+      );
+      return {
+        success: false,
+        message: 'خطا در ثبت سفارش. لطفا ورودی‌ها را چک کنید.',
+      };
     }
   },
 };

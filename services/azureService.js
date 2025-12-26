@@ -3,11 +3,11 @@ const { AzureKeyCredential } = require('@azure/core-auth');
 const { SearchIndexClient, SearchClient } = require('@azure/search-documents');
 const crypto = require('crypto');
 const Lead = require('../models/Lead');
-const WebConnection = require('../models/WebConnection'); // <--- جدید
-const wooService = require('./wooService'); // <--- جدید
+const WebConnection = require('../models/WebConnection');
+const wooService = require('./wooService'); // سرویس ووکامرس
 
 console.log(
-  '🟢 AZURE SERVICE v14 - ULTIMATE (WOOCOMMERCE + RAG + CRM + TOOLS) LOADED'
+  '🟢 AZURE SERVICE v15 - ULTIMATE (WOOCOMMERCE + ORDERS + RAG) LOADED'
 );
 
 // --- CONFIGURATION ---
@@ -50,7 +50,7 @@ const baseTools = [
     function: {
       name: 'save_lead_info',
       description:
-        'Extract and save user contact information (Lead) when provided.',
+        'Extract and save user contact information (Lead) when product is out of stock or user requests contact.',
       parameters: {
         type: 'object',
         properties: {
@@ -77,13 +77,13 @@ const shopTools = [
     function: {
       name: 'check_product_stock',
       description:
-        'Search for products in the online store to check price, stock, and details.',
+        'Search for products in the online store to check price, stock, and details. ALWAYS use this before answering about products.',
       parameters: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: "Product name or keyword (e.g. 'کفش نایک')",
+            description: "Product name or keyword (e.g. 'کلاه')",
           },
         },
         required: ['query'],
@@ -102,6 +102,34 @@ const shopTools = [
           order_id: { type: 'string', description: 'The numeric order ID' },
         },
         required: ['order_id'],
+      },
+    },
+  },
+  // ✅ ابزار جدید: ثبت سفارش
+  {
+    type: 'function',
+    function: {
+      name: 'create_order',
+      description:
+        'Create a new order in WooCommerce when user explicitly wants to buy. Ask for required details first.',
+      parameters: {
+        type: 'object',
+        properties: {
+          productId: {
+            type: 'integer',
+            description:
+              'The numeric ID of the product found via check_product_stock',
+          },
+          quantity: { type: 'integer', default: 1 },
+          firstName: { type: 'string', description: 'Customer first name' },
+          lastName: { type: 'string', description: 'Customer last name' },
+          phone: {
+            type: 'string',
+            description: 'Customer phone number (Essential)',
+          },
+          address: { type: 'string', description: 'Full shipping address' },
+        },
+        required: ['productId', 'phone', 'address'],
       },
     },
   },
@@ -161,7 +189,8 @@ const azureService = {
       };
     } catch (e) {
       console.error('Embedding Error:', e.message);
-      throw e;
+      // throw e; // در پروداکشن نباید کرش کند
+      return { vector: [], usage: 0 };
     }
   },
 
@@ -172,6 +201,8 @@ const azureService = {
     try {
       await azureService.ensureIndexExists();
       const { vector, usage } = await azureService.getEmbedding(content);
+      if (!vector || vector.length === 0) return false;
+
       const docId = crypto.randomBytes(16).toString('hex');
 
       const documents = [
@@ -331,38 +362,57 @@ const azureService = {
 
       // ب: افزودن ابزارهای فروشگاه (فقط برای وب)
       if (channelType === 'web') {
-        // در وب، igAccountId همان شناسه کانال وب است
         webConnection = await WebConnection.findById(igAccountId);
-        if (webConnection && webConnection.platform === 'woocommerce') {
+
+        // اگر پلتفرم ووکامرس بود یا هنوز مشخص نشده بود (برای سازگاری با نسخه‌های قبل)
+        if (
+          webConnection &&
+          (!webConnection.platform || webConnection.platform === 'woocommerce')
+        ) {
+          console.log('🛒 Shop Tools Loaded for Web');
           dynamicTools = [...dynamicTools, ...shopTools];
         }
       }
 
       // 2. RAG (جستجو در دیتابیس متنی)
-      const { vector, usage: embedUsage } = await azureService.getEmbedding(
-        userQuery
-      );
-      totalUsage += embedUsage;
-
-      const searchResults = await searchClient.search(userQuery, {
-        vectorQueries: [
-          { vector: vector, k: 5, fields: ['contentVector'], kind: 'vector' },
-        ],
-        filter: `ig_accountId eq '${igAccountId}'`,
-        select: ['content', 'title'],
-      });
-
+      // فقط اگر سوال کاربر طولانی باشد یا نیاز به دانش داشته باشد
       let context = '';
-      for await (const result of searchResults.results) {
-        context += `[Source: ${result.document.title}]\n${result.document.content}\n---\n`;
+      if (userQuery.length > 5) {
+        const { vector, usage: embedUsage } = await azureService.getEmbedding(
+          userQuery
+        );
+        totalUsage += embedUsage;
+
+        if (vector && vector.length > 0) {
+          try {
+            const searchResults = await searchClient.search(userQuery, {
+              vectorQueries: [
+                {
+                  vector: vector,
+                  k: 3,
+                  fields: ['contentVector'],
+                  kind: 'vector',
+                },
+              ],
+              filter: `ig_accountId eq '${igAccountId}'`,
+              select: ['content', 'title'],
+            });
+
+            for await (const result of searchResults.results) {
+              context += `[Source: ${result.document.title}]\n${result.document.content}\n---\n`;
+            }
+          } catch (e) {
+            console.log('Search skipped or failed:', e.message);
+          }
+        }
       }
 
-      // 3. ساخت پرامپت
+      // 3. ساخت پرامپت نهایی
       let promptLogic = strictMode
         ? 'Answer ONLY using the provided Context.'
         : 'Use Context as primary source. Use general knowledge if needed.';
 
-      const finalSystemPrompt = `${systemInstruction}\n\n${promptLogic}\n\nCONTEXT FROM KNOWLEDGE BASE:\n${context}\n\nIMPORTANT: If user gives phone number, ALWAYS use 'save_lead_info'.`;
+      const finalSystemPrompt = `${systemInstruction}\n\n${promptLogic}\n\nCONTEXT FROM KNOWLEDGE BASE:\n${context}\n\nIMPORTANT: If user gives phone number when product is out of stock, ALWAYS use 'save_lead_info'. If user wants to buy available product, ask for details and use 'create_order'.`;
 
       const messages = [
         { role: 'system', content: finalSystemPrompt },
@@ -399,8 +449,12 @@ const azureService = {
               interest_product: args.product,
               ...senderData,
             });
+            console.log('📝 Lead Captured:', args.phone);
           } catch (e) {}
-          functionResult = { success: true, message: 'Lead Saved' };
+          functionResult = {
+            success: true,
+            message: 'شماره تماس با موفقیت ذخیره شد. به کاربر بگو خبرش میکنیم.',
+          };
         }
 
         // --- ابزار ۲: اجرای فلو ---
@@ -430,9 +484,15 @@ const azureService = {
           );
         }
 
+        // --- ابزار ۵: ثبت سفارش (✅ جدید) ---
+        else if (toolCall.function.name === 'create_order') {
+          console.log('🛒 Creating Order for:', args.phone);
+          functionResult = await wooService.createOrder(webConnection, args);
+        }
+
         // ارسال نتیجه ابزار به GPT برای تولید پاسخ نهایی
         if (functionResult) {
-          messages.push(message); // اضافه کردن درخواست ابزار
+          messages.push(message); // اضافه کردن درخواست ابزار به تاریخچه
           messages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
@@ -460,7 +520,7 @@ const azureService = {
       };
     } catch (e) {
       console.error('AI Error:', e.message);
-      return null;
+      return null; // بازگشت نال باعث میشود سیستم کرش نکند
     }
   },
 
