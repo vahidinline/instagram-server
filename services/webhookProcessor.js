@@ -41,10 +41,11 @@ async function handleMessage(entry, messaging) {
   try {
     // 3. دریافت اطلاعات اکانت و تنظیمات (بر اساس پلتفرم)
     let connection, token, botConfig, aiConfig;
-
+    let isWeb = platform === 'web';
     if (platform === 'web') {
       // --- حالت وب ---
-      connection = await WebConnection.findById(igAccountId); // در وب، ID همان _id دیتابیس است
+      const WebConnection = require('../models/WebConnection');
+      connection = await WebConnection.findById(igAccountId); // <--- اصلاح مهم
       if (!connection) {
         console.error('❌ Web Connection not found.');
         return;
@@ -81,13 +82,20 @@ async function handleMessage(entry, messaging) {
 
     // 4. دریافت پروفایل کاربر
     let userInfo = { username: 'User', profile_picture: '', name: '' };
-
-    // تلاش برای خواندن از کش دیتابیس
-    const existingCustomer = await Customer.findOne({
-      ig_accountId: igAccountId,
-      sender_id: senderId,
-    });
-
+    if (isWeb) {
+      // در وب، نام کاربر "مهمان" است
+      userInfo = {
+        username: `Guest_${senderId.substr(0, 5)}`,
+        name: 'Guest',
+        profile_picture: '',
+      };
+    } else {
+      // تلاش برای خواندن از کش دیتابیس
+      const existingCustomer = await Customer.findOne({
+        ig_accountId: igAccountId,
+        sender_id: senderId,
+      });
+    }
     if (existingCustomer && existingCustomer.username) {
       userInfo = {
         username: existingCustomer.username,

@@ -41,17 +41,18 @@ router.post('/web/message', async (req, res) => {
   try {
     const { channelId, guestId, message } = req.body;
 
-    // ساخت فرمت استاندارد ایونت (شبیه اینستاگرام)
-    // تا webhookProcessor بتواند آن را پردازش کند
-    const webEvent = {
-      id: channelId, // آی‌دی کانال وب (جایگزین پیج اینستاگرام)
-      platform: 'web', // نشانگر پلتفرم
-      sender: { id: guestId }, // آی‌دی مهمان
+    const simulatedEntry = {
+      id: channelId,
+      platform: 'web', // این پرچم مهم است
+    };
+
+    const simulatedMessaging = {
+      sender: { id: guestId },
       message: { text: message },
     };
 
-    // ارسال به پردازشگر (بدون await تا کاربر معطل نشود)
-    processor.handleMessage(webEvent, webEvent); // فرمت کمی متفاوت است، باید پروسسور را سازگار کنیم
+    // ارسال به پردازشگر (بدون await)
+    processor.handleMessage(simulatedEntry, simulatedMessaging);
 
     res.json({ success: true });
   } catch (e) {
