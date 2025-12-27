@@ -4,6 +4,9 @@ const wooService = require('../wooService');
 const aiCore = require('../ai/core');
 
 const webHandler = {
+  /**
+   * پردازش اصلی پیام وب
+   */
   process: async (entry, messageData) => {
     try {
       const channelId = entry.id;
@@ -11,17 +14,25 @@ const webHandler = {
       const text = messageData.message.text;
       const metadata = entry.metadata || {};
 
+      // 1. دریافت کانکشن و پرسونا
       const connection = await WebConnection.findById(channelId).populate(
         'aiConfig.activePersonaId'
       );
-      if (!connection) return;
+
+      if (!connection) {
+        console.error('WebHandler: Connection not found', channelId);
+        return;
+      }
 
       const canCreateOrder = !!connection.consumerSecret;
+
+      // 2. ساخت کانتکست محصول
       let contextData = {
-        senderId,
+        senderId: senderId,
         platform: 'web',
         username: `Guest_${senderId.slice(-4)}`,
       };
+
       let productContextString = '';
 
       if (metadata.productId) {
@@ -31,6 +42,7 @@ const webHandler = {
         );
         if (productInfo) {
           contextData.productInfo = productInfo;
+
           productContextString = `
           [CONTEXT: USER IS LOOKING AT THIS PRODUCT]
           Name: ${productInfo.name}
@@ -40,36 +52,34 @@ const webHandler = {
           ${productInfo.variations_summary}
 
           CRITICAL STOCK RULES:
-          1. "Qty: X" -> Available (X left).
-          2. "Status: Available (Backorder Allowed)" -> AVAILABLE (Even if qty is 0).
-          3. "Out of Stock" -> Not available. DO NOT ORDER THIS ITEM.
-          4. If user asks for an out-of-stock item, say NO and ask for lead.
+          1. "Qty: X" -> Available (X items left).
+          2. "Status: Available (Backorder Allowed)" -> AVAILABLE.
+          3. "Out of Stock" -> NOT available.
           `;
+
+          console.log(`🛒 Context Injected for: ${productInfo.name}`);
         }
       }
 
+      // 3. ساخت پرامپت سیستم
       const techPrompt = `
-          [TECHNICAL INSTRUCTIONS]
-          You are an AI Sales Assistant connected to WooCommerce store: "${
-            connection.name
-          }".
+          System Role: Sales Assistant for "${connection.name}".
 
-          TOOLS & STRATEGY:
-          1. 'create_order': Use ONLY after collecting Name, Address, Phone AND Item Details.
-             - This tool accepts a LIST of items.
-             - Send ALL valid items in ONE single 'create_order' call.
-             - NEVER include out-of-stock items in the order.
-          2. 'save_lead_info': Use ONLY when OUT OF STOCK.
+          TOOLS:
+          1. 'check_product_stock': Use to search OTHER items.
+          2. 'create_order': Use ONLY after collecting Name, Address, Phone AND Item Details.
+             - Group all items into ONE order (send 'items' array).
+          3. 'save_lead_info': Use if out of stock.
+          4. 'ask_multiple_choice': Use when you need user to pick a VARIATION (Weight/Color) or QUANTITY.
+             - Example: { question: "کدام وزن؟", options: ["250 گرم", "1 کیلوگرم"] }
 
-          CRITICAL RULES FOR ORDERING:
-          1. **Reset Context:** Only process the LATEST request.
-          2. **Extract IDs:** Look at the 'Stock Data'. Use the correct ID for each variation (e.g. 250g has ID 68, 1kg has ID 67).
-          3. **Batching:** If user says "3 of 1kg AND 2 of 500g", but 500g is out of stock:
-             - Tell user 500g is unavailable.
-             - Ask if they want to proceed with just the 1kg.
-             - If yes, tool call: items: [{productId: 67, quantity: 3}]
+          CRITICAL RULES:
+          - Prefer 'ask_multiple_choice' over plain text for choices.
+          - Convert Persian words to numbers: "دو تا" -> 2.
+          - If user wants multiple items (e.g. "2 packs of 1kg"), send: items: [{productId: ID_1kg, quantity: 2}]
 
-          ${!canCreateOrder ? 'WARNING: Read-only access.' : ''}
+          Language: Persian.
+          ${!canCreateOrder ? 'Note: Read-only access enabled.' : ''}
         `;
 
       let personaPrompt = '';
@@ -84,6 +94,7 @@ const webHandler = {
 
       console.log(`🤖 Web Processing for ${senderId}`);
 
+      // 4. تاریخچه
       const history = await MessageLog.find({
         ig_accountId: channelId,
         sender_id: senderId,
@@ -91,14 +102,13 @@ const webHandler = {
         .sort({ created_at: -1 })
         .limit(6)
         .then((logs) =>
-          logs
-            .reverse()
-            .map((l) => ({
-              role: l.direction === 'incoming' ? 'user' : 'assistant',
-              content: l.content,
-            }))
+          logs.reverse().map((l) => ({
+            role: l.direction === 'incoming' ? 'user' : 'assistant',
+            content: l.content,
+          }))
         );
 
+      // 5. ارسال به AI
       const aiResponse = await aiCore.ask({
         userText: text,
         systemPrompt: finalSystemPrompt,
@@ -107,20 +117,35 @@ const webHandler = {
         contextData,
       });
 
+      // 6. پاسخ به سوکت
       const roomName = `web_${channelId}_${senderId}`;
-      let replyPayload = { direction: 'outgoing', created_at: new Date() };
+      let replyPayload = {
+        direction: 'outgoing',
+        created_at: new Date(),
+      };
 
       if (aiResponse.type === 'products') {
         replyPayload.message_type = 'card';
         replyPayload.content = 'این محصولات را بررسی کنید:';
         replyPayload.products = aiResponse.data;
+      } else if (aiResponse.type === 'options') {
+        // ✅ ارسال دکمه‌ها
+        replyPayload.message_type = 'options';
+        replyPayload.content = aiResponse.question;
+        replyPayload.buttons = aiResponse.choices.map((c) => ({
+          title: c,
+          payload: c,
+        }));
       } else {
         replyPayload.message_type = 'text';
         replyPayload.content = aiResponse.content;
       }
 
-      if (global.io) global.io.to(roomName).emit('new_message', replyPayload);
+      if (global.io) {
+        global.io.to(roomName).emit('new_message', replyPayload);
+      }
 
+      // 7. ذخیره در لاگ
       await MessageLog.create({
         ig_accountId: channelId,
         sender_id: senderId,

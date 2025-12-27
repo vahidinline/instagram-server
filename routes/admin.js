@@ -5,6 +5,7 @@ const Subscription = require('../models/Subscription');
 const Transaction = require('../models/Transaction');
 const MessageLog = require('../models/MessageLogs');
 const Plan = require('../models/Plan');
+const Persona = require('../models/Persona');
 const authMiddleware = require('../middleware/auth');
 const adminMiddleware = require('../middleware/admin');
 
@@ -26,7 +27,6 @@ router.get('/stats', async (req, res) => {
       { $group: { _id: null, total: { $sum: '$usage.aiTokensUsed' } } },
     ]);
 
-    // تعداد کل پیام‌ها
     const messageCount = await MessageLog.countDocuments();
 
     res.json({
@@ -41,73 +41,96 @@ router.get('/stats', async (req, res) => {
   }
 });
 
-// 2. لیست کاربران
+// 2. لیست کاربران (برای دراپ‌داون)
 router.get('/users', async (req, res) => {
   try {
     const users = await User.find()
-      .select('-password -otp')
+      .select('name email phone created_at')
       .sort({ created_at: -1 })
       .limit(100);
-
-    const usersWithSub = await Promise.all(
-      users.map(async (u) => {
-        const sub = await Subscription.findOne({
-          user_id: u._id,
-          status: 'active',
-        }).populate('plan_id');
-        return {
-          ...u._doc,
-          planName: sub?.plan_id?.name || 'Free/Expired',
-          usage: sub?.usage || { messagesUsed: 0, aiTokensUsed: 0 },
-          limits: sub?.currentLimits || {},
-        };
-      })
-    );
-
-    res.json(usersWithSub);
+    res.json(users);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// 3. لیست تراکنش‌ها
-router.get('/transactions', async (req, res) => {
-  try {
-    const txs = await Transaction.find()
-      .populate('user_id', 'name phone')
-      .populate('plan_id', 'name')
-      .sort({ createdAt: -1 })
-      .limit(100);
+// ==========================================
+// 🚀 بخش سرویس‌های مدیریت شده (VIP)
+// ==========================================
 
-    res.json(txs);
+// 3. دریافت لیست تمام پرسوناهای VIP (مخصوص ادمین)
+router.get('/vip-personas', async (req, res) => {
+  try {
+    // تمام پرسوناهایی که قفل هستند را بگیر و نام کاربر صاحبش را هم بیاور
+    const personas = await Persona.find({ isLocked: true })
+      .populate('user_id', 'name email')
+      .sort({ created_at: -1 });
+
+    res.json(personas);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// 4. ارتقای دستی کاربر
-router.put('/users/:id/upgrade', async (req, res) => {
+// 4. ساخت پرسونای VIP جدید
+router.post('/create-vip-persona', async (req, res) => {
   try {
-    const userId = req.params.id;
+    const { targetUserId, name, systemPrompt, avatar } = req.body;
 
-    const proPlan = await Plan.findOne({ slug: 'pro_monthly' });
-    if (!proPlan) return res.status(404).json({ error: 'Pro Plan not found' });
+    if (!targetUserId || !name || !systemPrompt) {
+      return res.status(400).json({ error: 'تمام فیلدها الزامی هستند.' });
+    }
 
-    await Subscription.deleteMany({ user_id: userId });
-
-    const endDate = new Date();
-    endDate.setDate(endDate.getDate() + 30);
-
-    await Subscription.create({
-      user_id: userId,
-      plan_id: proPlan._id,
-      currentLimits: proPlan.limits,
-      currentFeatures: proPlan.features,
-      endDate: endDate,
-      status: 'active',
+    const vipPersona = await Persona.create({
+      user_id: targetUserId,
+      name: name + ' (VIP) 🌟',
+      gender: 'robot',
+      avatar: avatar || 'https://api.dicebear.com/7.x/bottts/svg?seed=VIP',
+      config: {
+        tone: 80,
+        emojiUsage: true,
+        responseLength: 'medium',
+        role: 'sales',
+        salesStrategy: { aggressiveness: 'active', collectLead: true },
+      },
+      systemPrompt: systemPrompt,
+      isSystem: false,
+      isLocked: true, // قفل شده
     });
 
-    res.json({ success: true, message: 'User upgraded to PRO manually.' });
+    res.json({ success: true, persona: vipPersona });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 5. ویرایش پرسونای VIP
+router.put('/vip-personas/:id', async (req, res) => {
+  try {
+    const { name, systemPrompt, targetUserId } = req.body;
+
+    const updated = await Persona.findByIdAndUpdate(
+      req.params.id,
+      {
+        name,
+        systemPrompt,
+        user_id: targetUserId, // امکان تغییر صاحب پرسونا
+      },
+      { new: true }
+    );
+
+    if (!updated) return res.status(404).json({ error: 'یافت نشد' });
+    res.json(updated);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 6. حذف پرسونای VIP
+router.delete('/vip-personas/:id', async (req, res) => {
+  try {
+    await Persona.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

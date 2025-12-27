@@ -1,33 +1,32 @@
 const mongoose = require('mongoose');
 
 const PersonaSchema = new mongoose.Schema({
-  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, // null = سیستمی
+  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 
-  // هویت بصری
   name: { type: String, required: true },
   gender: { type: String, enum: ['male', 'female', 'robot'], default: 'robot' },
-  avatar: { type: String, default: '' }, // لینک عکس یا نام آیکون
+  avatar: { type: String, default: '' },
 
-  // تنظیمات رفتاری (برای تولید پرامپت)
   config: {
-    tone: { type: Number, default: 50 }, // 0 (رسمی) تا 100 (صمیمی)
+    tone: { type: Number, default: 50 },
     emojiUsage: { type: Boolean, default: true },
-    responseLength: {
-      type: String,
-      enum: ['short', 'medium', 'long'],
-      default: 'medium',
+    responseLength: { type: String, default: 'medium' },
+    role: { type: String, default: 'sales' },
+    salesStrategy: {
+      aggressiveness: { type: String, default: 'passive' },
+      collectLead: { type: Boolean, default: true },
     },
-    languageStyle: {
-      type: String,
-      enum: ['formal', 'casual', 'slang'],
-      default: 'casual',
-    },
+    customKnowledge: { type: String, default: '' },
   },
 
-  // خروجی نهایی (که به GPT داده می‌شود)
   systemPrompt: { type: String, required: true },
 
-  isSystem: { type: Boolean, default: false },
+  isSystem: { type: Boolean, default: false }, // برای همه کاربران (قالب آماده)
+
+  // ✅ فیلد جدید: پرسونای مدیریت شده (VIP)
+  // اگر true باشد، کاربر نمی‌تواند آن را حذف یا ویرایش کند و پرامپت را نمی‌بیند.
+  isLocked: { type: Boolean, default: false },
+
   created_at: { type: Date, default: Date.now },
 });
 

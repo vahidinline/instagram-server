@@ -6,13 +6,12 @@ const wooService = require('../wooService');
 const toolsDefinition = require('./tools');
 const Lead = require('../../models/Lead');
 
-console.log('🟢 AI CORE v2.1 - Fix Deployment Variable');
+console.log('🟢 AI CORE v3.0 - ULTIMATE (Options + Batch Order + Filter Safe)');
 
 // --- CONFIGURATION ---
 const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
 const apiKey = process.env.AZURE_OPENAI_KEY;
 const apiVersion = '2024-05-01-preview';
-// ✅ نام متغیر اصلی اینجاست:
 const chatDeployment = process.env.AZURE_OPENAI_DEPLOYMENT_CHAT;
 const embeddingDeployment = process.env.AZURE_OPENAI_DEPLOYMENT_EMBEDDING;
 
@@ -20,7 +19,7 @@ const searchEndpoint = process.env.AZURE_SEARCH_ENDPOINT;
 const searchKey = process.env.AZURE_SEARCH_KEY;
 const indexName = process.env.AZURE_SEARCH_INDEX_NAME || 'knowledge-base-index';
 
-// 1. ساخت کلاینت‌های OpenAI و Search
+// 1. Clients
 const openai = new AzureOpenAI({ endpoint, apiKey, apiVersion });
 const searchIndexClient = new SearchIndexClient(
   searchEndpoint,
@@ -178,7 +177,7 @@ const aiCore = {
 
       // الف) جستجو در پایگاه دانش (RAG)
       let ragContext = '';
-      if (userText.length > 5) {
+      if (userText && userText.length > 5) {
         const { vector } = await aiCore.getEmbedding(userText);
         if (vector.length > 0) {
           try {
@@ -197,7 +196,6 @@ const aiCore = {
         }
       }
 
-      // ب) ترکیب پرامپت‌ها
       const fullSystemPrompt = `${systemPrompt}\n\n[KNOWLEDGE BASE]\n${
         ragContext || 'No extra info.'
       }`;
@@ -209,33 +207,55 @@ const aiCore = {
       ];
 
       // ج) درخواست اول به مدل
-      const response = await openai.chat.completions.create({
-        model: chatDeployment, // ✅ استفاده صحیح
-        messages: messages,
-        temperature: 0.2, // دما را کم کردیم تا در سفارش دقیق باشد
-        tools: toolsDefinition,
-        tool_choice: 'auto',
-      });
+      let response;
+      try {
+        response = await openai.chat.completions.create({
+          model: chatDeployment,
+          messages: messages,
+          temperature: 0.2,
+          tools: toolsDefinition,
+          tool_choice: 'auto',
+        });
+      } catch (apiError) {
+        if (
+          apiError.status === 400 &&
+          apiError.message &&
+          apiError.message.includes('content management policy')
+        ) {
+          console.warn('⚠️ Azure Content Filter Triggered on Request 1');
+          return {
+            type: 'text',
+            content:
+              'متاسفانه پیام شما توسط سیستم امنیتی شناسایی شد. لطفاً با بیانی دیگر تلاش کنید.',
+          };
+        }
+        throw apiError;
+      }
 
       const responseMessage = response.choices[0].message;
 
-      // د) بررسی فراخوانی ابزار (Tool Calls)
+      // د) بررسی فراخوانی ابزار
       if (responseMessage.tool_calls) {
         messages.push(responseMessage);
-
         console.log(
           `🛠️ AI Triggered ${responseMessage.tool_calls.length} Tool(s)`
         );
 
         let isProductList = false;
         let productData = null;
+        let isOptionChip = false;
+        let optionData = null;
 
-        // اجرای تمام ابزارها (Loop)
         for (const toolCall of responseMessage.tool_calls) {
           const fnName = toolCall.function.name;
-          const args = JSON.parse(toolCall.function.arguments);
-          let toolResult = 'Done';
+          let args = {};
+          try {
+            args = JSON.parse(toolCall.function.arguments);
+          } catch (e) {
+            console.error('JSON Error', e);
+          }
 
+          let toolResult = 'Done';
           console.log(`🔹 Executing: ${fnName}`);
 
           try {
@@ -249,13 +269,22 @@ const aiCore = {
                 isProductList = true;
                 productData = products;
               } else {
-                toolResult = 'محصولی یافت نشد.';
+                toolResult = 'No products found.';
               }
             } else if (fnName === 'create_order') {
-              args.productId = parseInt(args.productId);
-              args.quantity = parseInt(args.quantity) || 1;
-
-              const order = await wooService.createOrder(connection, args);
+              let orderPayload = { ...args };
+              if (!orderPayload.items && orderPayload.productId) {
+                orderPayload.items = [
+                  {
+                    productId: parseInt(orderPayload.productId),
+                    quantity: parseInt(orderPayload.quantity) || 1,
+                  },
+                ];
+              }
+              const order = await wooService.createOrder(
+                connection,
+                orderPayload
+              );
               toolResult = JSON.stringify(order);
             } else if (fnName === 'save_lead_info' || fnName === 'save_lead') {
               const leadData = {
@@ -269,8 +298,18 @@ const aiCore = {
               await Lead.create(leadData);
               toolResult = 'Lead saved successfully.';
             }
+            // ✅ هندل کردن ابزار دکمه‌های گزینه‌ای
+            else if (fnName === 'ask_multiple_choice') {
+              isOptionChip = true;
+              optionData = {
+                type: 'options',
+                question: args.question,
+                choices: args.options,
+              };
+              toolResult = 'Options displayed to user.';
+            }
           } catch (err) {
-            console.error(`❌ Tool Execution Error (${fnName}):`, err.message);
+            console.error(`❌ Tool Error (${fnName}):`, err.message);
             toolResult = JSON.stringify({
               error: 'Failed',
               details: err.message,
@@ -284,7 +323,12 @@ const aiCore = {
           });
         }
 
-        // اگر خروجی فقط لیست محصول بود (کاروسل)
+        // 1. اگر ابزار دکمه‌ای بود، مستقیماً برگردان (بدون متن اضافه)
+        if (isOptionChip && optionData) {
+          return optionData;
+        }
+
+        // 2. اگر فقط لیست محصول بود
         if (
           isProductList &&
           productData &&
@@ -293,19 +337,40 @@ const aiCore = {
           return { type: 'products', data: productData };
         }
 
-        // ه) درخواست دوم برای پاسخ نهایی متنی
-        const finalResponse = await openai.chat.completions.create({
-          model: chatDeployment, // ✅✅✅ اصلاح شد: قبلاً اینجا deployment بود
-          messages: messages,
-        });
-
-        return {
-          type: 'text',
-          content: finalResponse.choices[0].message.content,
-        };
+        // ه) درخواست دوم (پاسخ نهایی)
+        try {
+          const finalResponse = await openai.chat.completions.create({
+            model: chatDeployment,
+            messages: messages,
+          });
+          return {
+            type: 'text',
+            content: finalResponse.choices[0].message.content,
+          };
+        } catch (apiError) {
+          if (
+            apiError.status === 400 &&
+            apiError.message &&
+            apiError.message.includes('content management policy')
+          ) {
+            console.warn('⚠️ Azure Content Filter Triggered on Request 2');
+            const lastMsg = messages[messages.length - 1];
+            if (
+              lastMsg.role === 'tool' &&
+              lastMsg.content.includes('"success":true')
+            ) {
+              return {
+                type: 'text',
+                content:
+                  'سفارش شما ثبت شد، اما سیستم قادر به تولید پیام نهایی نبود. لطفاً لینک پرداخت را بررسی کنید.',
+              };
+            }
+            return { type: 'text', content: 'خطا در تولید پاسخ نهایی.' };
+          }
+          throw apiError;
+        }
       }
 
-      // اگر ابزاری صدا زده نشد
       return { type: 'text', content: responseMessage.content };
     } catch (e) {
       console.error('❌ AI Core Error:', e.message);

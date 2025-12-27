@@ -108,7 +108,7 @@
             box-shadow: 0 1px 2px rgba(0,0,0,0.05);
         }
 
-        /* استایل لینک‌ها در پیام */
+        /* استایل لینک‌ها */
         .msg a { color: inherit; text-decoration: underline; font-weight: bold; }
         .msg-bot a { color: #4F46E5; }
 
@@ -146,6 +146,19 @@
             transition: background 0.2s;
         }
         .product-btn:hover { background: #e5e7eb; }
+
+        /* ✅ استایل دکمه‌های گزینه‌ای (Chips) */
+        .chips-container {
+            display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
+            justify-content: flex-start;
+        }
+        .chip-btn {
+            background: #ffffff; border: 1px solid #4F46E5; color: #4F46E5;
+            padding: 8px 14px; border-radius: 20px; font-size: 12px; font-weight: bold;
+            cursor: pointer; transition: all 0.2s; font-family: inherit;
+        }
+        .chip-btn:hover { background: #4F46E5; color: white; transform: translateY(-1px); box-shadow: 0 2px 5px rgba(79, 70, 229, 0.2); }
+        .chip-btn:active { transform: translateY(0); }
 
         /* ناحیه ورودی */
         .input-area {
@@ -235,12 +248,14 @@
       // فقط پیام‌های خروجی (از سمت ربات) را نمایش بده
       if (msg.direction === 'outgoing') {
         hideTyping();
-        addMessage(msg.content, 'bot', msg.products);
+        // ✅ پاس دادن دکمه‌ها به تابع نمایش
+        addMessage(msg.content, 'bot', msg.products, msg.buttons);
       }
     });
 
     // دریافت خطا
     socket.on('error_message', (data) => {
+      hideTyping();
       addMessage(`⚠️ خطا: ${data.message}`, 'bot');
     });
 
@@ -299,7 +314,7 @@
       return context;
     }
 
-    // ✅ تابع جدید: تبدیل لینک‌های مارک‌داون به HTML
+    // ✅ تابع تبدیل متن به HTML (لینک‌ها)
     function formatText(text) {
       if (!text) return '';
 
@@ -315,25 +330,25 @@
         '<a href="$1" target="_blank">$1</a>'
       );
 
-      // 3. خط جدید به <br>
+      // 3. تبدیل خط جدید
       formatted = formatted.replace(/\n/g, '<br>');
 
       return formatted;
     }
 
-    // G. افزودن پیام به صفحه
-    function addMessage(text, sender, products = null) {
-      if (!text && !products) return;
+    // G. افزودن پیام به صفحه (آپدیت شده برای Chips)
+    function addMessage(text, sender, products = null, buttons = null) {
+      if (!text && !products && !buttons) return;
 
       const div = document.createElement('div');
       div.className = `msg msg-${sender}`;
 
-      // استفاده از فرمت‌کننده متن (برای لینک‌دار کردن پرداخت)
+      // متن
       if (text) {
         div.innerHTML = formatText(text);
       }
 
-      // اگر محصولی ارسال شده بود (Product Cards)
+      // کارت محصول
       if (products && Array.isArray(products) && products.length > 0) {
         const container = document.createElement('div');
         container.className = 'products-container';
@@ -341,7 +356,6 @@
         products.forEach((p) => {
           const card = document.createElement('div');
           card.className = 'product-card';
-          // عکس پیش‌فرض اگر نداشت
           const imgUrl =
             p.image_url ||
             p.image ||
@@ -362,28 +376,62 @@
             `;
           container.appendChild(card);
         });
-
         div.appendChild(container);
+      }
+
+      // ✅ دکمه‌های گزینه‌ای (Option Chips)
+      if (buttons && Array.isArray(buttons) && buttons.length > 0) {
+        const chipsDiv = document.createElement('div');
+        chipsDiv.className = 'chips-container';
+
+        buttons.forEach((btn) => {
+          const chip = document.createElement('button');
+          chip.className = 'chip-btn';
+          chip.innerText = btn.title;
+
+          // هندلر کلیک روی چیپس
+          chip.onclick = () => {
+            // 1. پاک کردن دکمه‌ها (برای اینکه دوباره نتواند کلیک کند - اختیاری)
+            chipsDiv.remove();
+
+            // 2. نمایش متن دکمه به عنوان پیام کاربر
+            addMessage(btn.title, 'user');
+            showTyping();
+
+            // 3. ارسال به سرور
+            const metadata = detectContext();
+            fetch(`${SERVER_URL}/api/channels/web/message`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                channelId: CHANNEL_ID,
+                guestId: guestId,
+                message: btn.payload || btn.title, // ارسال پی‌لود یا تایتل
+                metadata: metadata,
+              }),
+            }).catch(console.error);
+          };
+
+          chipsDiv.appendChild(chip);
+        });
+        div.appendChild(chipsDiv);
       }
 
       messagesDiv.appendChild(div);
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
     }
 
-    // H. ارسال پیام
+    // H. ارسال پیام متنی
     const sendMessage = async () => {
       const text = input.value.trim();
       if (!text) return;
 
-      // 1. نمایش پیام کاربر بلافاصله
       addMessage(text, 'user');
       input.value = '';
       showTyping();
 
-      // 2. دریافت متادیتا (آیا در صفحه محصول است؟)
       const metadata = detectContext();
 
-      // 3. ارسال به سرور
       try {
         await fetch(`${SERVER_URL}/api/channels/web/message`, {
           method: 'POST',
@@ -422,7 +470,7 @@
     closeBtn.onclick = toggleChat;
     sendBtn.onclick = sendMessage;
 
-    // J. رفع باگ دزدی فوکوس و ارسال با اینتر
+    // J. رفع باگ دزدی فوکوس و اینتر
     const stopPropagation = (e) => e.stopPropagation();
     input.addEventListener('keydown', (e) => {
       e.stopPropagation();

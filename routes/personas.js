@@ -2,37 +2,47 @@ const express = require('express');
 const router = express.Router();
 const Persona = require('../models/Persona');
 const authMiddleware = require('../middleware/auth');
-const azureService = require('../services/azureService'); // <--- ✅ ایمپورت حیاتی
-const { buildSystemPrompt } = require('../utils/promptBuilder');
+const { buildSystemPrompt } = require('../utils/promptBuilder'); // فرض بر وجود
 
-// 1. دریافت لیست پرسوناها
+// 1. دریافت لیست پرسوناها (با سانسور IP)
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const personas = await Persona.find({
       $or: [{ isSystem: true }, { user_id: req.user.id }],
-    }).sort({ isSystem: -1, created_at: -1 });
+    }).sort({ isLocked: -1, isSystem: -1, created_at: -1 });
 
-    res.json(personas);
+    // 🛡️ سانسور کردن پرامپت برای پرسوناهای قفل شده
+    const safePersonas = personas.map((p) => {
+      if (p.isLocked) {
+        // کپی کردن آبجکت برای جلوگیری از تغییر در رفرنس دیتابیس
+        const safeP = p.toObject();
+        safeP.systemPrompt = '🔒 Protected by Consultant License'; // مخفی کردن راز
+        return safeP;
+      }
+      return p;
+    });
+
+    res.json(safePersonas);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// 2. ساخت پرسونا
+// 2. ساخت پرسونا (توسط کاربر)
 router.post('/', authMiddleware, async (req, res) => {
   try {
-    const { name, gender, avatar, config } = req.body;
+    const { name, gender, avatar, config, systemPrompt } = req.body;
 
-    const generatedPrompt = buildSystemPrompt(name, gender, config);
-
+    // کاربر عادی نمی‌تواند پرسونای قفل شده بسازد
     const newPersona = await Persona.create({
       user_id: req.user.id,
       name,
       gender,
       avatar,
       config,
-      systemPrompt: generatedPrompt,
+      systemPrompt: systemPrompt || 'Default Prompt',
       isSystem: false,
+      isLocked: false,
     });
 
     res.json(newPersona);
@@ -41,55 +51,29 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
-// 3. ویرایش پرسونا
-router.put('/:id', authMiddleware, async (req, res) => {
-  try {
-    const { name, gender, avatar, config } = req.body;
-
-    const generatedPrompt = buildSystemPrompt(name, gender, config);
-
-    const updatedPersona = await Persona.findOneAndUpdate(
-      { _id: req.params.id, user_id: req.user.id },
-      { name, gender, avatar, config, systemPrompt: generatedPrompt },
-      { new: true }
-    );
-
-    if (!updatedPersona)
-      return res.status(404).json({ error: 'Persona not found' });
-    res.json(updatedPersona);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// 4. حذف پرسونا
+// 3. حذف پرسونا
 router.delete('/:id', authMiddleware, async (req, res) => {
   try {
-    await Persona.findOneAndDelete({
+    const persona = await Persona.findOne({
       _id: req.params.id,
       user_id: req.user.id,
     });
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
 
-// 5. آنالیز لحن (Tone Cloning)
-router.post('/analyze-tone', authMiddleware, async (req, res) => {
-  try {
-    const { samples } = req.body;
+    if (!persona) return res.status(404).json({ error: 'Not found' });
 
-    if (!samples || samples.length < 2) {
-      return res.status(400).json({ error: 'حداقل ۲ نمونه متن لازم است.' });
+    // 🛡️ جلوگیری از حذف پرسونای VIP
+    if (persona.isLocked) {
+      return res
+        .status(403)
+        .json({
+          error:
+            'شما اجازه حذف این دستیار مدیریت‌شده را ندارید. با پشتیبانی تماس بگیرید.',
+        });
     }
 
-    // فراخوانی متد جدید در سرویس آژور
-    const generatedPrompt = await azureService.analyzeTone(samples);
-
-    res.json({ systemPrompt: generatedPrompt });
+    await Persona.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
   } catch (e) {
-    console.error(e);
     res.status(500).json({ error: e.message });
   }
 });

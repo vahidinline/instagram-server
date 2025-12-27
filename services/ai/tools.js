@@ -4,51 +4,38 @@ const tools = [
     type: 'function',
     function: {
       name: 'check_product_stock',
-      description:
-        'Search for products via WooCommerce API to check availability and price.',
+      description: 'Search for products via WooCommerce API.',
       parameters: {
         type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Product name or keyword' },
-        },
+        properties: { query: { type: 'string' } },
         required: ['query'],
       },
     },
   },
 
-  // 2. ثبت سفارش (Strict Array Mode)
+  // 2. ثبت سفارش
   {
     type: 'function',
     function: {
       name: 'create_order',
-      description: 'Create a SINGLE order containing one or multiple items.',
+      description: 'Create order with list of items.',
       parameters: {
         type: 'object',
         properties: {
           items: {
             type: 'array',
-            description: 'List of products to purchase',
             items: {
               type: 'object',
               properties: {
-                productId: {
-                  type: 'integer',
-                  description: 'The numeric Product ID',
-                },
-                quantity: {
-                  type: 'integer',
-                  description: 'Quantity for this specific product',
-                },
+                productId: { type: 'integer' },
+                quantity: { type: 'integer' },
               },
               required: ['productId', 'quantity'],
             },
           },
-          fullName: { type: 'string', description: 'Customer full name' },
-          phone: {
-            type: 'string',
-            description: 'Customer valid mobile number',
-          },
-          address: { type: 'string', description: 'Full shipping address' },
+          fullName: { type: 'string' },
+          phone: { type: 'string' },
+          address: { type: 'string' },
         },
         required: ['items', 'fullName', 'phone', 'address'],
       },
@@ -60,7 +47,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'save_lead',
-      description: 'Save customer contact info when product is OUT OF STOCK.',
+      description: 'Save contact info when OUT OF STOCK.',
       parameters: {
         type: 'object',
         properties: {
@@ -69,6 +56,31 @@ const tools = [
           productName: { type: 'string' },
         },
         required: ['phone'],
+      },
+    },
+  },
+
+  // ✅ 4. ابزار جدید: پرسش چند گزینه‌ای
+  {
+    type: 'function',
+    function: {
+      name: 'ask_multiple_choice',
+      description:
+        'Ask user to select from options (e.g. Size, Color, Quantity).',
+      parameters: {
+        type: 'object',
+        properties: {
+          question: {
+            type: 'string',
+            description: 'The question to ask (e.g. Which size?)',
+          },
+          options: {
+            type: 'array',
+            description: 'List of clickable options',
+            items: { type: 'string' },
+          },
+        },
+        required: ['question', 'options'],
       },
     },
   },
