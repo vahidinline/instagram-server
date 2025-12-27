@@ -17,23 +17,37 @@ const WebConnectionSchema = new mongoose.Schema({
     default: 'woocommerce',
   },
 
-  // اعتبارنامه‌های ووکامرس (برای دسترسی به محصولات/سفارشات)
+  // اعتبارنامه‌های ووکامرس
   consumerKey: { type: String },
-  consumerSecret: { type: String }, // نکته: در پروداکشن واقعی باید رمزنگاری شود
+  consumerSecret: { type: String },
 
   // تنظیمات ظاهری ویجت
   widgetConfig: {
-    color: { type: String, default: '#4F46E5' }, // رنگ اصلی
+    color: { type: String, default: '#4F46E5' },
     welcomeMessage: { type: String, default: 'سلام! چطور میتونم کمکتون کنم؟' },
     logoUrl: { type: String },
     position: { type: String, enum: ['right', 'left'], default: 'right' },
   },
 
-  // تنظیمات ربات برای این کانال
+  // تنظیمات هوش مصنوعی و پرسونا (✅ جدید)
+  aiConfig: {
+    enabled: { type: Boolean, default: true },
+    // اتصال به مدل پرسونا برای تعیین لحن
+    activePersonaId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Persona',
+      default: null,
+    },
+    // تنظیمات دستی اگر پرسونا انتخاب نشود
+    strictMode: { type: Boolean, default: false },
+    creativity: { type: Number, default: 0.5 },
+  },
+
+  // تنظیمات ربات (قوانین)
   botConfig: {
     isActive: { type: Boolean, default: true },
-    checkInventory: { type: Boolean, default: true }, // آیا موجودی چک کند؟
-    trackOrders: { type: Boolean, default: true }, // آیا پیگیری سفارش انجام دهد؟
+    checkInventory: { type: Boolean, default: true },
+    responseDelay: { type: Number, default: 0 },
   },
 
   isActive: { type: Boolean, default: true },

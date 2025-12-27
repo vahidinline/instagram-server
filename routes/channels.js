@@ -3,7 +3,7 @@ const router = express.Router();
 const WebConnection = require('../models/WebConnection');
 const authMiddleware = require('../middleware/auth');
 const processor = require('../services/webhookProcessor');
-const wooService = require('../services/wooService'); // برای روت تست
+const wooService = require('../services/wooService');
 
 // ==========================================
 // 🔓 روت‌های عمومی (Public)
@@ -30,10 +30,8 @@ router.get('/config/:id', async (req, res) => {
 // 2. دریافت پیام از ویجت (همراه با متادیتا)
 router.post('/web/message', async (req, res) => {
   try {
-    // دریافت metadata (شامل productId و url) از بادی درخواست
     const { channelId, guestId, message, metadata } = req.body;
 
-    // لاگ برای دیباگ
     const metaLog = metadata
       ? `(On Product: ${metadata.productId || 'None'})`
       : '';
@@ -43,7 +41,7 @@ router.post('/web/message', async (req, res) => {
       id: channelId,
       platform: 'web',
       time: Date.now(),
-      metadata: metadata || {}, // پاس دادن متادیتا به پردازشگر
+      metadata: metadata || {},
     };
 
     const simulatedMessaging = {
@@ -51,7 +49,6 @@ router.post('/web/message', async (req, res) => {
       message: { text: message, is_echo: false },
     };
 
-    // ارسال به پردازشگر مرکزی
     processor.handleMessage(simulatedEntry, simulatedMessaging);
 
     res.json({ success: true });
@@ -61,7 +58,7 @@ router.post('/web/message', async (req, res) => {
   }
 });
 
-// 3. تست اتصال ووکامرس (برای دیباگ)
+// 3. تست اتصال ووکامرس
 router.get('/test-woo/:id', async (req, res) => {
   try {
     const channelId = req.params.id;
@@ -81,10 +78,12 @@ router.get('/test-woo/:id', async (req, res) => {
 // 🔒 روت‌های خصوصی (Private - Admin)
 // ==========================================
 
-// 4. لیست کانال‌های کاربر
+// 4. لیست کانال‌های کاربر (همراه با نام پرسونا)
 router.get('/web', authMiddleware, async (req, res) => {
   try {
-    const channels = await WebConnection.find({ user_id: req.user.id });
+    const channels = await WebConnection.find({
+      user_id: req.user.id,
+    }).populate('aiConfig.activePersonaId', 'name avatar'); // نام پرسونا را هم برگردان
     res.json(channels);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -94,8 +93,16 @@ router.get('/web', authMiddleware, async (req, res) => {
 // 5. ساخت کانال جدید
 router.post('/web', authMiddleware, async (req, res) => {
   try {
-    const { name, siteUrl, consumerKey, consumerSecret, widgetConfig } =
-      req.body;
+    // activePersonaId را از بادی می‌گیریم
+    const {
+      name,
+      siteUrl,
+      consumerKey,
+      consumerSecret,
+      widgetConfig,
+      activePersonaId,
+    } = req.body;
+
     const newChannel = await WebConnection.create({
       user_id: req.user.id,
       name,
@@ -103,8 +110,41 @@ router.post('/web', authMiddleware, async (req, res) => {
       consumerKey,
       consumerSecret,
       widgetConfig,
+      aiConfig: {
+        enabled: true,
+        activePersonaId: activePersonaId || null, // ذخیره آی‌دی پرسونا
+      },
     });
     res.json(newChannel);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 6. ویرایش کانال (برای تغییر پرسونا یا تنظیمات)
+router.put('/web/:id', authMiddleware, async (req, res) => {
+  try {
+    const { name, widgetConfig, botConfig, activePersonaId } = req.body;
+
+    // آپدیت فیلدها
+    const updateData = {
+      name,
+      widgetConfig,
+      botConfig,
+    };
+
+    // اگر پرسونا تغییر کرده بود
+    if (activePersonaId !== undefined) {
+      updateData['aiConfig.activePersonaId'] = activePersonaId;
+    }
+
+    const updated = await WebConnection.findOneAndUpdate(
+      { _id: req.params.id, user_id: req.user.id },
+      { $set: updateData },
+      { new: true }
+    );
+
+    res.json(updated);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
