@@ -33,7 +33,7 @@ const wooService = {
     }
   },
 
-  // ✅ دریافت اطلاعات دقیق (بهینه شده برای درک هوش مصنوعی)
+  // ✅ دریافت اطلاعات دقیق (اصلاح شده برای Backorders)
   getProductById: async (connection, productId) => {
     try {
       console.log(`🔎 WooService: Fetching Details for ID ${productId}...`);
@@ -59,43 +59,52 @@ const wooService = {
         variations_summary: '',
       };
 
-      // الف: محصول متغیر (Variable)
+      // الف: محصول متغیر
       if (p.type === 'variable') {
         try {
           const varResponse = await axios.get(
             `${siteUrl}/wp-json/wc/v3/products/${productId}/variations`,
             {
-              params: { per_page: 50 }, // افزایش تعداد برای اطمینان
+              params: { per_page: 50 },
               auth,
             }
           );
 
-          // فرمت خروجی دقیق برای AI:
-          // [Attribute: Value] => Price: X, Stock: (Qty: 5 OR Status: In Stock)
           const summary = varResponse.data
             .map((v) => {
               const attrs = v.attributes
                 .map((a) => `${a.name}: ${a.option}`)
                 .join(', ');
 
-              // لاجیک مهم: اگر تعداد نال بود (یعنی مدیریت موجودی خاموش است)، وضعیت را چک کن
-              let stockInfo = 'Status: Out of Stock';
-              if (v.stock_quantity !== null) {
-                stockInfo = `Qty: ${v.stock_quantity}`; // عدد دقیق
-              } else if (v.stock_status === 'instock') {
-                stockInfo = `Status: In Stock (Unlimited)`; // وضعیت موجود
+              // ✅ لاجیک جدید تشخیص موجودی:
+              let stockInfo = 'Out of Stock';
+
+              // 1. اگر وضعیت کلی instock است
+              if (v.stock_status === 'instock') {
+                // اگر تعداد مشخص است و بیشتر از 0
+                if (v.stock_quantity !== null && v.stock_quantity > 0) {
+                  stockInfo = `Qty: ${v.stock_quantity} (Available)`;
+                }
+                // اگر تعداد 0 یا نال است اما بک‌اوردر مجاز است (یا مدیریت موجودی خاموش است)
+                else {
+                  stockInfo = `Status: Available (Backorder Allowed)`;
+                }
+              }
+              // 2. اگر در بک‌اوردر است (onbackorder)
+              else if (v.stock_status === 'onbackorder') {
+                stockInfo = `Status: Available (Pre-order)`;
               }
 
               return ` - Variant [${attrs}] => Price: ${v.price}, Stock: ${stockInfo}, ID: ${v.id}`;
             })
             .join('\n');
 
-          productData.variations_summary = `THIS IS A VARIABLE PRODUCT. AVAILABLE OPTIONS:\n${summary}`;
+          productData.variations_summary = `THIS IS A VARIABLE PRODUCT. OPTIONS:\n${summary}`;
         } catch (e) {
           console.log('Error fetching variations:', e.message);
         }
       }
-      // ب: محصول ساده (Simple)
+      // ب: محصول ساده
       else {
         let attributesStr = '';
         if (p.attributes && p.attributes.length > 0) {
@@ -104,16 +113,17 @@ const wooService = {
             .join(' | ');
         }
 
-        let stockInfo = 'Status: Out of Stock';
-        if (p.stock_quantity !== null) {
-          stockInfo = `Qty: ${p.stock_quantity}`;
-        } else if (p.stock_status === 'instock') {
-          stockInfo = `Status: In Stock (Unlimited)`;
+        let stockInfo = 'Out of Stock';
+        if (p.stock_status === 'instock') {
+          if (p.stock_quantity !== null && p.stock_quantity > 0) {
+            stockInfo = `Qty: ${p.stock_quantity}`;
+          } else {
+            stockInfo = `Status: Available (Backorder Allowed)`;
+          }
         }
 
         productData.variations_summary = `
-          THIS IS A SIMPLE PRODUCT.
-          Attributes: ${attributesStr || 'None'}
+          SIMPLE PRODUCT. Attributes: ${attributesStr || 'None'}
           Stock Info: ${stockInfo}
           `;
       }
@@ -126,22 +136,14 @@ const wooService = {
     }
   },
 
-  // ثبت سفارش (با دریافت تعداد)
+  // ثبت سفارش
   createOrder: async (connection, orderData) => {
     console.log('🛒 WooService: Creating Order...', orderData);
     try {
       const siteUrl = connection.siteUrl.replace(/\/$/, '');
-
       const names = (orderData.fullName || 'کاربر مهمان').split(' ');
       const firstName = names[0];
       const lastName = names.length > 1 ? names.slice(1).join(' ') : 'مهمان';
-
-      // پیدا کردن ID محصول
-      // اگر محصول ساده است، همان productId
-      // اگر متغیر است، ما VariationID را نیاز داریم.
-      // اما اینجا هوش مصنوعی معمولا ID کلی را می‌فرستد.
-      // *بهینه‌سازی:* هوش مصنوعی باید Variation ID را بفرستد، اما اگر نفرستاد ووکامرس خودش تلاش میکند هندل کند.
-      // برای سادگی فعلا همان ID ارسالی را می‌فرستیم. (در فاز بعد دقیقتر میکنیم)
 
       const payload = {
         payment_method: 'bacs',
@@ -157,7 +159,7 @@ const wooService = {
         line_items: [
           {
             product_id: orderData.productId,
-            quantity: orderData.quantity || 1, // ✅ دریافت تعداد از ورودی
+            quantity: orderData.quantity || 1,
           },
         ],
       };
@@ -172,8 +174,6 @@ const wooService = {
           },
         }
       );
-
-      console.log('✅ Order Created. ID:', response.data.id);
 
       const order = response.data;
       const payLink =

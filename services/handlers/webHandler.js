@@ -18,11 +18,10 @@ const webHandler = {
 
       const canCreateOrder = !!connection.consumerSecret;
       let contextData = {
-        senderId: senderId,
+        senderId,
         platform: 'web',
         username: `Guest_${senderId.slice(-4)}`,
       };
-
       let productContextString = '';
 
       if (metadata.productId) {
@@ -32,44 +31,39 @@ const webHandler = {
         );
         if (productInfo) {
           contextData.productInfo = productInfo;
-
-          // ✅ پرامپت کانتکست (بسیار دقیق شده)
           productContextString = `
           [CONTEXT: USER IS LOOKING AT THIS PRODUCT]
           Name: ${productInfo.name}
           Price: ${productInfo.price}
           Type: ${productInfo.type}
-
-          [STOCK DATA - READ CAREFULLY]
+          Stock Data:
           ${productInfo.variations_summary}
 
-          CRITICAL RULES FOR STOCK:
-          1. "Qty: X" means X items are available.
-          2. "Status: In Stock (Unlimited)" means it IS AVAILABLE (Unlimited).
-          3. "Status: Out of Stock" or "Qty: 0" means NOT available.
-          4. If user asks for "1Kg" and you see "1 کیلوگرم" with "Status: In Stock", say YES, IT IS AVAILABLE.
+          CRITICAL STOCK RULES:
+          1. "Qty: X" -> Available (X left).
+          2. "Status: Available (Backorder Allowed)" -> AVAILABLE (Even if qty is 0).
+          3. "Out of Stock" -> Not available.
           `;
-
-          console.log(`🛒 Context Loaded for: ${productInfo.name}`);
         }
       }
 
       const techPrompt = `
-          [TECHNICAL INSTRUCTIONS - HIDDEN]
+          [TECHNICAL INSTRUCTIONS]
           You are an AI Sales Assistant connected to WooCommerce store: "${
             connection.name
           }".
 
           TOOLS & STRATEGY:
-          1. 'check_product_stock': Use ONLY for OTHER products (not the current one).
-          2. 'create_order': Use when user confirms purchase.
-             - REQUIRED ARGS: productId, fullName, address, phone.
-             - IMPORTANT: Extract 'quantity' from user message (e.g. "4 ta mikham" -> quantity: 4). Default is 1.
-          3. 'save_lead_info': Use ONLY when item is OUT OF STOCK.
+          1. 'check_product_stock': For other products.
+          2. 'create_order': Use ONLY after collecting Name, Address, Phone AND QUANTITY.
+          3. 'save_lead_info': Use ONLY when OUT OF STOCK.
 
-          RULES:
-          - Language: PERSIAN (Farsi) only.
-          - If user wants multiple items (e.g. "2 ta"), MAKE SURE to pass 'quantity: 2' to the create_order tool.
+          RULES FOR ORDERING (STRICT):
+          - Step 1: Check availability.
+          - Step 2: If available, ask: "تعداد مورد نیاز شما چند تاست؟" (How many do you need?). << IMPORTANT
+          - Step 3: Get Name, Address, Phone.
+          - Step 4: Call 'create_order' with the extracted 'quantity'.
+            (If user didn't specify number, do NOT guess. Ask them).
 
           ${!canCreateOrder ? 'WARNING: Read-only access.' : ''}
         `;
@@ -93,10 +87,12 @@ const webHandler = {
         .sort({ created_at: -1 })
         .limit(6)
         .then((logs) =>
-          logs.reverse().map((l) => ({
-            role: l.direction === 'incoming' ? 'user' : 'assistant',
-            content: l.content,
-          }))
+          logs
+            .reverse()
+            .map((l) => ({
+              role: l.direction === 'incoming' ? 'user' : 'assistant',
+              content: l.content,
+            }))
         );
 
       const aiResponse = await aiCore.ask({
@@ -108,10 +104,7 @@ const webHandler = {
       });
 
       const roomName = `web_${channelId}_${senderId}`;
-      let replyPayload = {
-        direction: 'outgoing',
-        created_at: new Date(),
-      };
+      let replyPayload = { direction: 'outgoing', created_at: new Date() };
 
       if (aiResponse.type === 'products') {
         replyPayload.message_type = 'card';
@@ -122,9 +115,7 @@ const webHandler = {
         replyPayload.content = aiResponse.content;
       }
 
-      if (global.io) {
-        global.io.to(roomName).emit('new_message', replyPayload);
-      }
+      if (global.io) global.io.to(roomName).emit('new_message', replyPayload);
 
       await MessageLog.create({
         ig_accountId: channelId,
