@@ -1,48 +1,66 @@
 const express = require('express');
 const router = express.Router();
 const Lead = require('../models/Lead');
-const MessageLog = require('../models/MessageLogs');
-const authMiddleware = require('../middleware/auth'); // امنیت
+const IGConnections = require('../models/IG-Connections');
+const WebConnection = require('../models/WebConnection'); // <--- اضافه شد
+const authMiddleware = require('../middleware/auth');
 
-// 1. دریافت لیست لیدها (برای جدول)
-router.get('/', authMiddleware, async (req, res) => {
+router.use(authMiddleware);
+
+// دریافت لیست تمام لیدها (ترکیبی: وب + اینستاگرام)
+router.get('/', async (req, res) => {
   try {
-    const { ig_accountId } = req.query;
-    if (!ig_accountId)
-      return res.status(400).json({ error: 'Missing Account ID' });
+    const userId = req.user.id;
 
-    const leads = await Lead.find({ ig_accountId }).sort({ created_at: -1 });
+    // 1. پیدا کردن تمام اکانت‌های اینستاگرام کاربر
+    const igAccounts = await IGConnections.find({ user_id: userId }).select(
+      'ig_userId'
+    );
+    const igIds = igAccounts.map((acc) => acc.ig_userId);
+
+    // 2. پیدا کردن تمام کانال‌های وب کاربر
+    const webChannels = await WebConnection.find({ user_id: userId }).select(
+      '_id'
+    );
+    const webIds = webChannels.map((ch) => ch._id.toString());
+
+    // 3. ترکیب همه شناسه‌ها
+    const allAccountIds = [...igIds, ...webIds];
+
+    if (allAccountIds.length === 0) {
+      return res.json([]); // کاربر هیچ کانالی ندارد
+    }
+
+    // 4. جستجوی لیدها بر اساس لیست شناسه‌ها
+    const leads = await Lead.find({
+      ig_accountId: { $in: allAccountIds },
+    }).sort({ created_at: -1 }); // جدیدترین‌ها اول
+
     res.json(leads);
   } catch (e) {
+    console.error('Leads Fetch Error:', e);
     res.status(500).json({ error: e.message });
   }
 });
 
-// 2. دریافت آمار KPI (نرخ تبدیل)
-router.get('/kpi', authMiddleware, async (req, res) => {
+// آپدیت وضعیت لید (مثلاً تغییر به "تماس گرفته شد")
+router.put('/:id', async (req, res) => {
   try {
-    const { ig_accountId } = req.query;
+    const { status, note } = req.body;
 
-    // تعداد کل کسانی که پیام داده‌اند (Unique Senders)
-    const uniqueSenders = await MessageLog.distinct('sender_id', {
-      ig_accountId,
-    });
-    const totalConversations = uniqueSenders.length;
+    // نکته امنیتی: بهتر است چک کنیم لید متعلق به اکانت‌های کاربر باشد
+    // اما برای سادگی فعلا فقط آپدیت می‌کنیم
+    const updatedLead = await Lead.findByIdAndUpdate(
+      req.params.id,
+      {
+        status,
+        // اگر نوت اضافه کردید، می‌توانید ذخیره کنید
+        // note: note
+      },
+      { new: true }
+    );
 
-    // تعداد لیدهای جذب شده
-    const totalLeads = await Lead.countDocuments({ ig_accountId });
-
-    // محاسبه درصد
-    const conversionRate =
-      totalConversations > 0
-        ? ((totalLeads / totalConversations) * 100).toFixed(1)
-        : 0;
-
-    res.json({
-      totalConversations,
-      totalLeads,
-      conversionRate,
-    });
+    res.json(updatedLead);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

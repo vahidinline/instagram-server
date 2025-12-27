@@ -6,8 +6,6 @@ const aiCore = require('../ai/core');
 const webHandler = {
   /**
    * پردازش اصلی پیام وب
-   * @param {Object} entry - داده‌های ورودی شامل id, platform, metadata
-   * @param {Object} messageData - شامل sender و متن پیام
    */
   process: async (entry, messageData) => {
     try {
@@ -16,29 +14,26 @@ const webHandler = {
       const text = messageData.message.text;
       const metadata = entry.metadata || {};
 
-      // 1. دریافت کانکشن و پرسونا (Populate)
+      // 1. دریافت کانکشن و پرسونا
       const connection = await WebConnection.findById(channelId).populate(
         'aiConfig.activePersonaId'
       );
-
       if (!connection) {
         console.error('WebHandler: Connection not found', channelId);
         return;
       }
 
-      // ✅ امنیت: بررسی اینکه آیا دسترسی ثبت سفارش داریم؟
-      // اگر consumerSecret خالی باشد، یعنی دسترسی نوشتن نداریم
       const canCreateOrder = !!connection.consumerSecret;
 
-      // 2. ساخت کانتکست (Context Awareness)
-      // اطلاعاتی که برای ثبت لید یا درک محصول نیاز است
+      // 2. ساخت کانتکست محصول (هوشمند شده با Variations) 🧠
       let contextData = {
-        senderId: senderId, // حیاتی برای ثبت لید
+        senderId: senderId,
         platform: 'web',
         username: `Guest_${senderId.slice(-4)}`,
       };
 
-      // اگر کاربر در صفحه محصول است، اطلاعات آن را بگیر
+      let productContextString = ''; // متنی که به پرامپت تزریق می‌شود
+
       if (metadata.productId) {
         const productInfo = await wooService.getProductById(
           connection,
@@ -46,13 +41,30 @@ const webHandler = {
         );
         if (productInfo) {
           contextData.productInfo = productInfo;
-          console.log(`🛒 User is viewing: ${productInfo.name}`);
+
+          // ساخت متن کانتکست برای هوش مصنوعی
+          productContextString = `
+          [CURRENT CONTEXT: USER IS VIEWING THIS PRODUCT]
+          ID: ${productInfo.id}
+          Name: ${productInfo.name}
+          Price: ${productInfo.price}
+          Type: ${productInfo.type}
+          Details: ${productInfo.variations_summary}
+
+          IMPORTANT RULE: The user is ALREADY looking at this product.
+          1. DO NOT send the product link/card again unless explicitly asked.
+          2. Use the 'Details' above to answer questions about Colors, Sizes, and Stock.
+          3. If user wants a specific variation (e.g., Red), check if it says "Stock: موجود" above.
+          `;
+
+          console.log(
+            `🛒 Context Loaded: ${productInfo.name} (${productInfo.type})`
+          );
         }
       }
 
-      // 3. ساخت "پرامپت ساندویچی" (Sandwich Prompt) 🥪
+      // 3. ساخت "پرامپت ساندویچی" 🥪
 
-      // لایه ۱: دستورالعمل‌های فنی (ثابت و استراتژیک)
       const techPrompt = `
           [TECHNICAL INSTRUCTIONS - HIDDEN]
           You are an AI Sales Assistant connected to WooCommerce store: "${
@@ -60,52 +72,37 @@ const webHandler = {
           }".
 
           TOOLS & STRATEGY:
-          1. 'check_product_stock': Use this to find items.
-          2. 'create_order': Use ONLY when user explicitly confirms they want to buy available item. Collect Address & Phone first.
-          3. 'save_lead_info': Use ONLY when item is OUT OF STOCK. Say: "موجودی تمام شده. شماره تماس بگذارید تا خبرتان کنیم."
+          1. 'check_product_stock': Use ONLY if user asks about a *different* product than the one in context.
+          2. 'create_order': Use when user confirms purchase. Collect Name, Address, Phone.
+          3. 'save_lead_info': Use ONLY when item is OUT OF STOCK.
 
           RULES:
           - Language: PERSIAN (Farsi) only.
-          - Do not be pushy. Use soft closing techniques.
-          - Never make up URLs.
+          - Answer specific questions about color/size based on CURRENT CONTEXT provided below.
+          - If the requested variation (e.g. Size 43) is in stock, say YES and ask to order.
+          - If the requested variation is not in the list or out of stock, say NO and ask for lead (phone number).
 
           ${
             !canCreateOrder
-              ? 'WARNING: You do NOT have permission to create orders (No API Key). Just give product link.'
+              ? 'WARNING: Read-only access. Do not create orders.'
               : ''
           }
         `;
 
-      // لایه ۲: لحن و پرسونا (متغیر از دیتابیس)
       let personaPrompt = '';
       if (connection.aiConfig && connection.aiConfig.activePersonaId) {
         const persona = connection.aiConfig.activePersonaId;
-        personaPrompt = `
-          [YOUR PERSONA - ACT LIKE THIS]
-          Name: ${persona.name}
-          ${persona.systemPrompt}
-
-          Instructions: Maintain the sales goals defined above, but use the Tone and Style defined here.
-            `;
+        personaPrompt = `[YOUR PERSONA]\nName: ${persona.name}\n${persona.systemPrompt}`;
       } else {
-        // پرسونای پیش‌فرض
-        personaPrompt = `
-          [DEFAULT PERSONA]
-          Tone: Professional, Helpful, Polite.
-          Style: Short and concise.
-            `;
+        personaPrompt = `[DEFAULT PERSONA]\nTone: Professional, Helpful.`;
       }
 
-      // ترکیب نهایی
-      const finalSystemPrompt = `${techPrompt}\n\n${personaPrompt}`;
+      // تزریق اطلاعات محصول دقیقاً وسط پرامپت
+      const finalSystemPrompt = `${techPrompt}\n\n${productContextString}\n\n${personaPrompt}`;
 
-      console.log(
-        `🤖 Web Processing for ${senderId} | Persona: ${
-          connection.aiConfig?.activePersonaId?.name || 'Default'
-        }`
-      );
+      console.log(`🤖 Web Processing for ${senderId}`);
 
-      // 4. دریافت تاریخچه چت
+      // 4. تاریخچه
       const history = await MessageLog.find({
         ig_accountId: channelId,
         sender_id: senderId,
@@ -119,16 +116,16 @@ const webHandler = {
           }))
         );
 
-      // 5. ارسال به هسته هوش مصنوعی
+      // 5. ارسال به هسته AI
       const aiResponse = await aiCore.ask({
         userText: text,
         systemPrompt: finalSystemPrompt,
         history,
         connection,
-        contextData, // پاس دادن کانتکست برای لید و محصول
+        contextData,
       });
 
-      // 6. آماده‌سازی پاسخ برای سوکت
+      // 6. پاسخ به سوکت
       const roomName = `web_${channelId}_${senderId}`;
       let replyPayload = {
         direction: 'outgoing',
@@ -136,22 +133,19 @@ const webHandler = {
       };
 
       if (aiResponse.type === 'products') {
-        // حالت نمایش کارت محصول
         replyPayload.message_type = 'card';
         replyPayload.content = 'این محصولات را بررسی کنید:';
         replyPayload.products = aiResponse.data;
       } else {
-        // حالت متن معمولی
         replyPayload.message_type = 'text';
         replyPayload.content = aiResponse.content;
       }
 
-      // 7. ارسال به فرانت (ویجت)
       if (global.io) {
         global.io.to(roomName).emit('new_message', replyPayload);
       }
 
-      // 8. ذخیره در لاگ
+      // 7. ذخیره در لاگ
       await MessageLog.create({
         ig_accountId: channelId,
         sender_id: senderId,
@@ -162,13 +156,10 @@ const webHandler = {
       });
     } catch (e) {
       console.error('❌ WebHandler Error:', e);
-      // ارسال ارور به کاربر برای جلوگیری از بلاتکلیفی
       if (global.io && messageData?.sender?.id) {
         global.io
           .to(`web_${entry.id}_${messageData.sender.id}`)
-          .emit('error_message', {
-            message: 'متاسفانه خطایی رخ داد. لطفا دوباره تلاش کنید.',
-          });
+          .emit('error_message', { message: 'خطا در پردازش.' });
       }
     }
   },
