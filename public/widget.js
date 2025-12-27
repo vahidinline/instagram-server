@@ -108,6 +108,10 @@
             box-shadow: 0 1px 2px rgba(0,0,0,0.05);
         }
 
+        /* استایل لینک‌ها در پیام */
+        .msg a { color: inherit; text-decoration: underline; font-weight: bold; }
+        .msg-bot a { color: #4F46E5; }
+
         /* استایل کارت محصول (Product Card) */
         .products-container {
             display: flex; overflow-x: auto; gap: 10px; padding-bottom: 5px;
@@ -229,7 +233,6 @@
     // C. دریافت پیام از سرور
     socket.on('new_message', (msg) => {
       // فقط پیام‌های خروجی (از سمت ربات) را نمایش بده
-      // پیام‌های ورودی را خودمان موقع ارسال اضافه کرده‌ایم
       if (msg.direction === 'outgoing') {
         hideTyping();
         addMessage(msg.content, 'bot', msg.products);
@@ -285,7 +288,7 @@
         }
       }
 
-      // اگر هنوز پیدا نشد، شاید متا تگ باشد (بسته به قالب)
+      // روش 3: متا تگ‌ها
       if (!context.productId) {
         const metaId = document.querySelector(
           'meta[property="product:retailer_item_id"]'
@@ -296,6 +299,28 @@
       return context;
     }
 
+    // ✅ تابع جدید: تبدیل لینک‌های مارک‌داون به HTML
+    function formatText(text) {
+      if (!text) return '';
+
+      // 1. تبدیل لینک‌های Markdown: [Text](Url)
+      let formatted = text.replace(
+        /\[([^\]]+)\]\(([^)]+)\)/g,
+        '<a href="$2" target="_blank">$1</a>'
+      );
+
+      // 2. تبدیل لینک‌های خام: http...
+      formatted = formatted.replace(
+        /(?<!href="|">)(https?:\/\/[^\s<]+)/g,
+        '<a href="$1" target="_blank">$1</a>'
+      );
+
+      // 3. خط جدید به <br>
+      formatted = formatted.replace(/\n/g, '<br>');
+
+      return formatted;
+    }
+
     // G. افزودن پیام به صفحه
     function addMessage(text, sender, products = null) {
       if (!text && !products) return;
@@ -303,9 +328,9 @@
       const div = document.createElement('div');
       div.className = `msg msg-${sender}`;
 
-      // تبدیل خطوط جدید به br
+      // استفاده از فرمت‌کننده متن (برای لینک‌دار کردن پرداخت)
       if (text) {
-        div.innerHTML = text.replace(/\n/g, '<br>');
+        div.innerHTML = formatText(text);
       }
 
       // اگر محصولی ارسال شده بود (Product Cards)
@@ -353,7 +378,7 @@
       // 1. نمایش پیام کاربر بلافاصله
       addMessage(text, 'user');
       input.value = '';
-      showTyping(); // نمایش حالت نوشتن تا زمان پاسخ
+      showTyping();
 
       // 2. دریافت متادیتا (آیا در صفحه محصول است؟)
       const metadata = detectContext();
@@ -367,7 +392,7 @@
             channelId: CHANNEL_ID,
             guestId: guestId,
             message: text,
-            metadata: metadata, // ارسال متادیتا به بک‌اند جدید
+            metadata: metadata,
           }),
         });
       } catch (err) {
@@ -397,7 +422,7 @@
     closeBtn.onclick = toggleChat;
     sendBtn.onclick = sendMessage;
 
-    // J. رفع باگ دزدی فوکوس (وردپرس) و ارسال با اینتر
+    // J. رفع باگ دزدی فوکوس و ارسال با اینتر
     const stopPropagation = (e) => e.stopPropagation();
     input.addEventListener('keydown', (e) => {
       e.stopPropagation();
@@ -410,7 +435,7 @@
     input.addEventListener('keyup', stopPropagation);
     input.addEventListener('focus', stopPropagation);
 
-    // K. دریافت کانفیگ اولیه (اختیاری: برای ست کردن رنگ و متن خوش‌آمدگویی)
+    // K. دریافت کانفیگ اولیه
     fetch(`${SERVER_URL}/api/channels/config/${CHANNEL_ID}`)
       .then((res) => res.json())
       .then((config) => {
@@ -425,7 +450,6 @@
         }
       })
       .catch(() => {
-        // اگر کانفیگ لود نشد، پیام پیش‌فرض
         if (messagesDiv.children.length === 0) {
           addMessage('سلام! چطور میتونم کمکتون کنم؟', 'bot');
         }
