@@ -1,5 +1,5 @@
 const tools = [
-  // 1. استعلام موجودی
+  // 1. استعلام موجودی (بدون تغییر)
   {
     type: 'function',
     function: {
@@ -9,47 +9,54 @@ const tools = [
       parameters: {
         type: 'object',
         properties: {
-          query: {
-            type: 'string',
-            description: 'Product name or keyword (e.g. کفش نایک)',
-          },
+          query: { type: 'string', description: 'Product name or keyword' },
         },
         required: ['query'],
       },
     },
   },
 
-  // 2. ثبت سفارش (با پارامترهای اجباری)
+  // 2. ثبت سفارش (✅ تغییر اساسی: دریافت لیست آیتم‌ها)
   {
     type: 'function',
     function: {
       name: 'create_order',
-      description:
-        'Create a pending order in WooCommerce and generate payment link.',
+      description: 'Create a SINGLE order containing one or multiple items.',
       parameters: {
         type: 'object',
         properties: {
-          productId: {
-            type: 'integer',
-            description:
-              'The numeric Product ID found from check_product_stock',
+          // دریافت آرایه‌ای از محصولات
+          items: {
+            type: 'array',
+            description: 'List of products to purchase',
+            items: {
+              type: 'object',
+              properties: {
+                productId: {
+                  type: 'integer',
+                  description: 'The numeric Product ID',
+                },
+                quantity: {
+                  type: 'integer',
+                  description: 'Quantity for this specific product',
+                },
+              },
+              required: ['productId', 'quantity'],
+            },
           },
-          fullName: {
-            type: 'string',
-            description: 'Customer full name extracted from message',
-          },
+          fullName: { type: 'string', description: 'Customer full name' },
           phone: {
             type: 'string',
-            description: 'Customer valid mobile number (e.g. 0912...)',
+            description: 'Customer valid mobile number',
           },
           address: { type: 'string', description: 'Full shipping address' },
         },
-        required: ['productId', 'fullName', 'phone', 'address'], // این خط حیاتی است
+        required: ['items', 'fullName', 'phone', 'address'],
       },
     },
   },
 
-  // 3. ثبت لید (وقتی کالا نیست)
+  // 3. ثبت لید (بدون تغییر)
   {
     type: 'function',
     function: {
@@ -60,10 +67,7 @@ const tools = [
         properties: {
           phone: { type: 'string' },
           name: { type: 'string' },
-          productName: {
-            type: 'string',
-            description: 'Name of the product user wanted',
-          },
+          productName: { type: 'string' },
         },
         required: ['phone'],
       },
