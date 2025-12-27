@@ -6,12 +6,13 @@ const wooService = require('../wooService');
 const toolsDefinition = require('./tools');
 const Lead = require('../../models/Lead');
 
-console.log('🟢 AI CORE v2.0 - Loaded (RAG + Shop + Tools)');
+console.log('🟢 AI CORE v2.1 - Fix Deployment Variable');
 
 // --- CONFIGURATION ---
 const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
 const apiKey = process.env.AZURE_OPENAI_KEY;
 const apiVersion = '2024-05-01-preview';
+// ✅ نام متغیر اصلی اینجاست:
 const chatDeployment = process.env.AZURE_OPENAI_DEPLOYMENT_CHAT;
 const embeddingDeployment = process.env.AZURE_OPENAI_DEPLOYMENT_EMBEDDING;
 
@@ -209,9 +210,9 @@ const aiCore = {
 
       // ج) درخواست اول به مدل
       const response = await openai.chat.completions.create({
-        model: chatDeployment,
+        model: chatDeployment, // ✅ استفاده صحیح
         messages: messages,
-        temperature: 0.3,
+        temperature: 0.2, // دما را کم کردیم تا در سفارش دقیق باشد
         tools: toolsDefinition,
         tool_choice: 'auto',
       });
@@ -220,7 +221,6 @@ const aiCore = {
 
       // د) بررسی فراخوانی ابزار (Tool Calls)
       if (responseMessage.tool_calls) {
-        // ✅ نکته حیاتی: اضافه کردن پیام مدل به تاریخچه
         messages.push(responseMessage);
 
         console.log(
@@ -253,7 +253,8 @@ const aiCore = {
               }
             } else if (fnName === 'create_order') {
               args.productId = parseInt(args.productId);
-              args.quantity = parseInt(args.quantity) || 1; // فیکس کردن تعداد
+              args.quantity = parseInt(args.quantity) || 1;
+
               const order = await wooService.createOrder(connection, args);
               toolResult = JSON.stringify(order);
             } else if (fnName === 'save_lead_info' || fnName === 'save_lead') {
@@ -276,7 +277,6 @@ const aiCore = {
             });
           }
 
-          // ✅ اضافه کردن نتیجه ابزار به تاریخچه
           messages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
@@ -284,14 +284,18 @@ const aiCore = {
           });
         }
 
-        // اگر خروجی کاروسل محصول بود، نیازی به متن نیست
-        if (isProductList && productData) {
+        // اگر خروجی فقط لیست محصول بود (کاروسل)
+        if (
+          isProductList &&
+          productData &&
+          responseMessage.tool_calls.length === 1
+        ) {
           return { type: 'products', data: productData };
         }
 
         // ه) درخواست دوم برای پاسخ نهایی متنی
         const finalResponse = await openai.chat.completions.create({
-          model: deployment,
+          model: chatDeployment, // ✅✅✅ اصلاح شد: قبلاً اینجا deployment بود
           messages: messages,
         });
 
@@ -307,7 +311,7 @@ const aiCore = {
       console.error('❌ AI Core Error:', e.message);
       return {
         type: 'text',
-        content: 'متاسفانه خطایی رخ داد. لطفا دوباره تلاش کنید.',
+        content: 'متاسفانه خطایی در سرور رخ داد. لطفا دوباره تلاش کنید.',
       };
     }
   },

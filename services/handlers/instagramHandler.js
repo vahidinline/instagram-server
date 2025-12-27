@@ -17,9 +17,23 @@ const instagramHandler = {
    */
   process: async (entry, messaging) => {
     try {
-      const igAccountId = entry.id;
-      const senderId = messaging.sender.id;
+      // ✅ جلوگیری از لوپ (Echo & Self-Message Protection)
+      if (messaging.message && messaging.message.is_echo) {
+        // console.log('🔄 Echo message ignored.');
+        return;
+      }
+
+      const igAccountId = entry.id; // ID پیج ما
+      const senderId = messaging.sender.id; // ID فرستنده
+
+      // ✅ گارد امنیتی دوم: اگر فرستنده همان پیج ما بود، نادیده بگیر
+      if (senderId === igAccountId) {
+        console.log('🛑 Self-message ignored to prevent loops.');
+        return;
+      }
+
       const text = messaging.message?.text;
+      if (!text) return; // اگر پیام متن نداشت (مثلا لایک بود) و هندل نشده بود
 
       // 1. گیت‌کیپر (بررسی اشتراک)
       const quotaCheck = await subManager.checkLimit(igAccountId, 'instagram');
@@ -61,7 +75,7 @@ const instagramHandler = {
         userInfo = await fetchUserProfile(senderId, igAccountId, token);
       }
 
-      // 4. CRM Analysis (تحلیل احساسات و تگ)
+      // 4. CRM Analysis
       let analysis = {
         sentiment: 'neutral',
         tags: [],
@@ -82,11 +96,10 @@ const instagramHandler = {
           );
           if (analysisResult?.result) analysis = analysisResult.result;
         } catch (e) {
-          console.error('CRM Analysis Fail:', e.message);
+          // console.error('CRM Analysis Fail:', e.message);
         }
       }
 
-      // آپدیت مشتری
       await updateCustomer(
         igAccountId,
         senderId,
@@ -95,7 +108,7 @@ const instagramHandler = {
         currentStage
       );
 
-      // 5. اگر ربات خاموش است، فقط لاگ کردیم (در پردازشگر اصلی) و خارج میشویم
+      // 5. اگر ربات خاموش است
       if (botConfig.isActive === false) return;
 
       // 6. جستجوی تریگر
@@ -107,7 +120,6 @@ const instagramHandler = {
         const campaignCheck = await checkCampaignRules(trigger);
         if (!campaignCheck) return;
 
-        // اجرای فلو
         await executeFlow(
           trigger,
           igAccountId,
@@ -120,7 +132,6 @@ const instagramHandler = {
           aiConfig
         );
 
-        // آپدیت وضعیت لاگ در صورت نیاز (اینجا دسترسی مستقیم به آبجکت لاگ نداریم اما مهم نیست)
         if (campaignCheck.campaign) {
           await Campaign.findByIdAndUpdate(campaignCheck.campaign._id, {
             $inc: { 'limits.currentReplies': 1 },
@@ -137,15 +148,11 @@ const instagramHandler = {
 
         console.log('🤖 IG Asking AI...');
 
-        // تاریخچه
         const history = await getChatHistory(igAccountId, senderId);
-
-        // لیست فلوها
         const availableFlows = await Flows.find({
           ig_accountId: igAccountId,
         }).select('name');
 
-        // پرامپت
         const systemPrompt =
           aiConfig.activePersonaId?.systemPrompt ||
           aiConfig.systemPrompt ||
@@ -210,13 +217,11 @@ const instagramHandler = {
         }
       }
     } catch (e) {
-      console.error('❌ IG Process Error:', e);
+      console.error('❌ IG Process Error:', e.message);
     }
   },
 
-  /**
-   * پردازش کامنت‌ها
-   */
+  // هندل کردن کامنت‌ها (بدون تغییر)
   handleComment: async (entry, change) => {
     try {
       const igAccountId = entry.id;
@@ -233,7 +238,7 @@ const instagramHandler = {
         ig_userId: igAccountId,
       });
       if (!connection) return;
-      if (senderUsername === connection.username) return; // کامنت خودمان
+      if (senderUsername === connection.username) return; // ایگنور کردن کامنت خودمان
 
       const quotaCheck = await subManager.checkLimit(igAccountId, 'instagram');
       if (!quotaCheck.allowed) return;
@@ -255,7 +260,7 @@ const instagramHandler = {
 
         const flow = await Flows.findById(trigger.flow_id);
         if (flow) {
-          // 1. پاسخ عمومی (Reply to comment)
+          // 1. ریپلای عمومی
           if (botConfig.publicReplyText) {
             try {
               await axios.post(
@@ -266,7 +271,7 @@ const instagramHandler = {
             } catch (e) {}
           }
 
-          // 2. آماده‌سازی پیام دایرکت
+          // 2. دایرکت خصوصی
           const firstMsg = flow.messages[0];
           let messageToSend = firstMsg.content;
           if (!messageToSend && firstMsg.type === 'card') {
@@ -287,7 +292,6 @@ const instagramHandler = {
               firstMsg.buttons.map((b) => `${b.title}: ${b.url}`).join('\n');
           }
 
-          // 3. ارسال دایرکت
           try {
             await axios.post(
               `${GRAPH_URL}/me/messages`,
@@ -330,7 +334,7 @@ const instagramHandler = {
 };
 
 // --- توابع کمکی (Helpers) ---
-
+// (دقیقاً همان توابع فایل قبلی - بدون تغییر)
 async function sendReply(accountId, recipientId, messageData, token) {
   try {
     let payload = { recipient: { id: recipientId }, message: {} };
@@ -429,7 +433,6 @@ async function executeFlow(
     let messageType = msg.type || 'text';
 
     if (msg.type === 'ai_response') {
-      // لاجیک AI در فلو
       const systemPrompt = aiConfig.systemPrompt || 'Helpful assistant.';
       const hybridPrompt = msg.content
         ? `${systemPrompt}\n\nTask: ${msg.content}`
