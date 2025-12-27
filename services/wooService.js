@@ -23,8 +23,8 @@ const wooService = {
         default_action_url: p.permalink,
         stock_quantity: p.stock_quantity,
         description: p.short_description
-          .replace(/<[^>]*>?/gm, '')
-          .substring(0, 150),
+          ? p.short_description.replace(/<[^>]*>?/gm, '').substring(0, 100)
+          : '',
       }));
     } catch (error) {
       console.error('Woo Search Error:', error.message);
@@ -32,10 +32,9 @@ const wooService = {
     }
   },
 
-  // دریافت اطلاعات یک محصول خاص (برای کانتکست صفحه)
+  // اطلاعات محصول تکی
   getProductById: async (connection, productId) => {
     try {
-      if (!productId) return null;
       const siteUrl = connection.siteUrl.replace(/\/$/, '');
       const response = await axios.get(
         `${siteUrl}/wp-json/wc/v3/products/${productId}`,
@@ -46,34 +45,44 @@ const wooService = {
           },
         }
       );
-      const p = response.data;
       return {
-        name: p.name,
-        price: p.price,
-        stock: p.stock_quantity,
-        description: p.short_description.replace(/<[^>]*>?/gm, ''),
+        name: response.data.name,
+        price: response.data.price,
+        stock: response.data.stock_quantity,
       };
     } catch (e) {
       return null;
     }
   },
 
-  // ثبت سفارش
+  // ثبت سفارش واقعی
   createOrder: async (connection, orderData) => {
     try {
       const siteUrl = connection.siteUrl.replace(/\/$/, '');
+
+      // جدا کردن نام و نام خانوادگی (ساده)
+      const names = (orderData.fullName || 'کاربر مهمان').split(' ');
+      const firstName = names[0];
+      const lastName = names.length > 1 ? names.slice(1).join(' ') : 'مهمان';
+
       const payload = {
-        payment_method: 'cod',
-        payment_method_title: 'پرداخت امن',
+        payment_method: 'bacs', // کارت به کارت (یا هر چی که دیفالت هست)
+        payment_method_title: 'پرداخت آنلاین',
         set_paid: false,
         billing: {
-          first_name: 'کاربر',
-          last_name: 'مهمان',
+          first_name: firstName,
+          last_name: lastName,
           address_1: orderData.address,
+          city: 'Tehran', // فعلا هاردکد، بعدا میشه از ادرس استخراج کرد
           phone: orderData.phone,
-          email: 'guest@store.com',
+          email: 'guest@generated.com', // ووکامرس ایمیل میخواد، فیک میزنیم اگر کاربر نداد
         },
-        line_items: [{ product_id: orderData.productId, quantity: 1 }],
+        line_items: [
+          {
+            product_id: orderData.productId,
+            quantity: 1,
+          },
+        ],
       };
 
       const response = await axios.post(
@@ -87,14 +96,24 @@ const wooService = {
         }
       );
 
+      const order = response.data;
+
+      // ساخت لینک پرداخت (استاندارد ووکامرس)
+      // این لینک کاربر را مستقیم به صفحه پرداخت بانک میبرد (اگر درگاه نصب باشد)
+      const payLink =
+        order.payment_url ||
+        `${siteUrl}/checkout/order-pay/${order.id}/?pay_for_order=true&key=${order.order_key}`;
+
       return {
         success: true,
-        order_id: response.data.id,
-        payment_url: `${siteUrl}/checkout/order-pay/${response.data.id}/?pay_for_order=true&key=${response.data.order_key}`,
-        message: 'سفارش ثبت شد.',
+        order_id: order.id,
+        total: order.total,
+        payment_url: payLink,
+        message: 'سفارش ثبت شد! لینک پرداخت ایجاد گردید.',
       };
     } catch (error) {
-      return { success: false, message: 'خطا در ثبت سفارش.' };
+      console.error('Woo Order Error:', error.response?.data || error.message);
+      return { success: false, message: 'خطا در ثبت سفارش در سایت.' };
     }
   },
 };

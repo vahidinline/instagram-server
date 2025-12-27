@@ -1,19 +1,30 @@
 const mongoose = require('mongoose');
 
 const LeadSchema = new mongoose.Schema({
-  ig_accountId: { type: String, required: true, index: true }, // مربوط به کدام بیزینس
+  ig_accountId: { type: String, required: true, index: true }, // شناسه کانال (وب یا اینستا)
 
-  // اطلاعات مشتری در اینستاگرام
-  instagram_user_id: { type: String, required: true },
+  // --- تغییرات برای Omnichannel ---
+  platform: {
+    type: String,
+    enum: ['instagram', 'web', 'telegram', 'whatsapp'],
+    default: 'instagram',
+    required: true,
+  },
+
+  // شناسه عمومی کاربر (در وب guest_id، در اینستا psid)
+  sender_id: { type: String, required: true, index: true },
+
+  // اطلاعات اختصاصی اینستاگرام (اختیاری شدند)
+  instagram_user_id: { type: String },
   instagram_username: { type: String },
   instagram_fullname: { type: String },
 
   // اطلاعات استخراج شده توسط هوش مصنوعی
-  extracted_name: { type: String }, // نامی که مشتری در چت گفته
-  phone: { type: String, required: true }, // شماره تماس (حیاتی)
-  interest_product: { type: String }, // محصول مورد علاقه (Context)
+  extracted_name: { type: String },
+  phone: { type: String, required: true },
+  interest_product: { type: String },
 
-  // وضعیت پیگیری (برای CRM)
+  // وضعیت پیگیری
   status: {
     type: String,
     enum: ['new', 'contacted', 'purchased', 'lost'],
@@ -23,7 +34,7 @@ const LeadSchema = new mongoose.Schema({
   created_at: { type: Date, default: Date.now },
 });
 
-// جلوگیری از ثبت تکراری یک شماره برای یک اکانت
-LeadSchema.index({ ig_accountId: 1, phone: 1 }, { unique: true });
+// ایندکس ترکیبی: برای هر کانال، هر شماره موبایل فقط یک لید باز داشته باشد (اختیاری)
+LeadSchema.index({ ig_accountId: 1, phone: 1 }, { unique: false });
 
 module.exports = mongoose.model('Lead', LeadSchema);
