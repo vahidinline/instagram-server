@@ -3,12 +3,13 @@ const router = express.Router();
 const WebConnection = require('../models/WebConnection');
 const authMiddleware = require('../middleware/auth');
 const processor = require('../services/webhookProcessor');
+const wooService = require('../services/wooService'); // برای روت تست
 
 // ==========================================
-// 🔓 روت‌های عمومی (Public) - بدون نیاز به توکن
+// 🔓 روت‌های عمومی (Public)
 // ==========================================
 
-// 1. دریافت کانفیگ ویجت (رنگ، لوگو و...)
+// 1. دریافت کانفیگ ویجت
 router.get('/config/:id', async (req, res) => {
   try {
     const channel = await WebConnection.findById(req.params.id);
@@ -26,17 +27,23 @@ router.get('/config/:id', async (req, res) => {
   }
 });
 
-// 2. دریافت پیام از ویجت
+// 2. دریافت پیام از ویجت (همراه با متادیتا)
 router.post('/web/message', async (req, res) => {
   try {
-    const { channelId, guestId, message } = req.body;
+    // دریافت metadata (شامل productId و url) از بادی درخواست
+    const { channelId, guestId, message, metadata } = req.body;
 
-    console.log(`🌐 Web Widget Message: ${message} (User: ${guestId})`);
+    // لاگ برای دیباگ
+    const metaLog = metadata
+      ? `(On Product: ${metadata.productId || 'None'})`
+      : '';
+    console.log(`🌐 Web Widget: "${message}" from ${guestId} ${metaLog}`);
 
     const simulatedEntry = {
       id: channelId,
       platform: 'web',
       time: Date.now(),
+      metadata: metadata || {}, // پاس دادن متادیتا به پردازشگر
     };
 
     const simulatedMessaging = {
@@ -44,7 +51,7 @@ router.post('/web/message', async (req, res) => {
       message: { text: message, is_echo: false },
     };
 
-    // مستقیماً به پردازشگر می‌فرستیم (بدون صف Redis برای سرعت بیشتر در وب)
+    // ارسال به پردازشگر مرکزی
     processor.handleMessage(simulatedEntry, simulatedMessaging);
 
     res.json({ success: true });
@@ -54,11 +61,27 @@ router.post('/web/message', async (req, res) => {
   }
 });
 
+// 3. تست اتصال ووکامرس (برای دیباگ)
+router.get('/test-woo/:id', async (req, res) => {
+  try {
+    const channelId = req.params.id;
+    const query = req.query.q || 'test';
+    const connection = await WebConnection.findById(channelId);
+    if (!connection)
+      return res.status(404).json({ error: 'Channel not found' });
+
+    const result = await wooService.searchProducts(connection, query);
+    res.json({ site: connection.siteUrl, result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ==========================================
-// 🔒 روت‌های خصوصی (Private) - فقط برای ادمین
+// 🔒 روت‌های خصوصی (Private - Admin)
 // ==========================================
 
-// 3. لیست کانال‌های کاربر
+// 4. لیست کانال‌های کاربر
 router.get('/web', authMiddleware, async (req, res) => {
   try {
     const channels = await WebConnection.find({ user_id: req.user.id });
@@ -68,12 +91,11 @@ router.get('/web', authMiddleware, async (req, res) => {
   }
 });
 
-// 4. ساخت کانال جدید
+// 5. ساخت کانال جدید
 router.post('/web', authMiddleware, async (req, res) => {
   try {
     const { name, siteUrl, consumerKey, consumerSecret, widgetConfig } =
       req.body;
-
     const newChannel = await WebConnection.create({
       user_id: req.user.id,
       name,
@@ -82,7 +104,6 @@ router.post('/web', authMiddleware, async (req, res) => {
       consumerSecret,
       widgetConfig,
     });
-
     res.json(newChannel);
   } catch (e) {
     res.status(500).json({ error: e.message });
