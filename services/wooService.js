@@ -33,7 +33,7 @@ const wooService = {
     }
   },
 
-  // ✅ دریافت اطلاعات دقیق (اصلاح شده برای Backorders)
+  // دریافت اطلاعات دقیق (بهینه شده برای AI)
   getProductById: async (connection, productId) => {
     try {
       console.log(`🔎 WooService: Fetching Details for ID ${productId}...`);
@@ -59,7 +59,6 @@ const wooService = {
         variations_summary: '',
       };
 
-      // الف: محصول متغیر
       if (p.type === 'variable') {
         try {
           const varResponse = await axios.get(
@@ -75,23 +74,15 @@ const wooService = {
               const attrs = v.attributes
                 .map((a) => `${a.name}: ${a.option}`)
                 .join(', ');
-
-              // ✅ لاجیک جدید تشخیص موجودی:
               let stockInfo = 'Out of Stock';
 
-              // 1. اگر وضعیت کلی instock است
               if (v.stock_status === 'instock') {
-                // اگر تعداد مشخص است و بیشتر از 0
                 if (v.stock_quantity !== null && v.stock_quantity > 0) {
                   stockInfo = `Qty: ${v.stock_quantity} (Available)`;
-                }
-                // اگر تعداد 0 یا نال است اما بک‌اوردر مجاز است (یا مدیریت موجودی خاموش است)
-                else {
+                } else {
                   stockInfo = `Status: Available (Backorder Allowed)`;
                 }
-              }
-              // 2. اگر در بک‌اوردر است (onbackorder)
-              else if (v.stock_status === 'onbackorder') {
+              } else if (v.stock_status === 'onbackorder') {
                 stockInfo = `Status: Available (Pre-order)`;
               }
 
@@ -103,9 +94,7 @@ const wooService = {
         } catch (e) {
           console.log('Error fetching variations:', e.message);
         }
-      }
-      // ب: محصول ساده
-      else {
+      } else {
         let attributesStr = '';
         if (p.attributes && p.attributes.length > 0) {
           attributesStr = p.attributes
@@ -121,11 +110,9 @@ const wooService = {
             stockInfo = `Status: Available (Backorder Allowed)`;
           }
         }
-
-        productData.variations_summary = `
-          SIMPLE PRODUCT. Attributes: ${attributesStr || 'None'}
-          Stock Info: ${stockInfo}
-          `;
+        productData.variations_summary = `SIMPLE PRODUCT. Attributes: ${
+          attributesStr || 'None'
+        }\nStock Info: ${stockInfo}`;
       }
 
       console.log(`📦 Woo Output:\n${productData.variations_summary}`);
@@ -136,9 +123,26 @@ const wooService = {
     }
   },
 
-  // ثبت سفارش
+  // ✅ ثبت سفارش (اصلاح اساسی برای رفع ارور ۵۰۰)
   createOrder: async (connection, orderData) => {
-    console.log('🛒 WooService: Creating Order...', orderData);
+    // 1. پاکسازی داده‌ها: فقط items را بردار و بقیه را نادیده بگیر
+    const cleanItems = (orderData.items || []).filter(
+      (i) => i.productId && !isNaN(i.productId)
+    );
+
+    // اگر آیتمی نبود، خطا بده
+    if (cleanItems.length === 0) {
+      return {
+        success: false,
+        message: 'هیچ محصول معتبری برای سفارش یافت نشد.',
+      };
+    }
+
+    console.log(
+      '🛒 WooService: Creating Order with CLEAN Items:',
+      JSON.stringify(cleanItems)
+    );
+
     try {
       const siteUrl = connection.siteUrl.replace(/\/$/, '');
       const names = (orderData.fullName || 'کاربر مهمان').split(' ');
@@ -156,12 +160,10 @@ const wooService = {
           phone: orderData.phone,
           email: 'guest@generated.com',
         },
-        line_items: [
-          {
-            product_id: orderData.productId,
-            quantity: orderData.quantity || 1,
-          },
-        ],
+        line_items: cleanItems.map((item) => ({
+          product_id: item.productId,
+          quantity: item.quantity || 1,
+        })),
       };
 
       const response = await axios.post(
@@ -175,6 +177,8 @@ const wooService = {
         }
       );
 
+      console.log('✅ Single Order Created. ID:', response.data.id);
+
       const order = response.data;
       const payLink =
         order.payment_url ||
@@ -184,14 +188,14 @@ const wooService = {
         success: true,
         order_id: order.id,
         payment_url: payLink,
-        message: 'سفارش ثبت شد.',
+        message: 'سفارش با موفقیت ثبت شد.',
       };
     } catch (error) {
       console.error(
         '❌ Woo Order Error:',
         error.response?.data || error.message
       );
-      return { success: false, message: 'خطا در ثبت سفارش.' };
+      return { success: false, message: 'خطا در ارتباط با فروشگاه.' };
     }
   },
 };

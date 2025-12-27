@@ -1,5 +1,5 @@
 const tools = [
-  // 1. استعلام موجودی (بدون تغییر)
+  // 1. استعلام موجودی
   {
     type: 'function',
     function: {
@@ -16,7 +16,7 @@ const tools = [
     },
   },
 
-  // 2. ثبت سفارش (✅ تغییر اساسی: دریافت لیست آیتم‌ها)
+  // 2. ثبت سفارش (Strict Array Mode)
   {
     type: 'function',
     function: {
@@ -25,7 +25,6 @@ const tools = [
       parameters: {
         type: 'object',
         properties: {
-          // دریافت آرایه‌ای از محصولات
           items: {
             type: 'array',
             description: 'List of products to purchase',
@@ -56,7 +55,7 @@ const tools = [
     },
   },
 
-  // 3. ثبت لید (بدون تغییر)
+  // 3. ثبت لید
   {
     type: 'function',
     function: {
