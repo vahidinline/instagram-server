@@ -5,13 +5,17 @@ const crypto = require('crypto');
 const wooService = require('../wooService');
 const toolsDefinition = require('./tools');
 const Lead = require('../../models/Lead');
+const AnalyticsEvent = require('../../models/AnalyticsEvent'); // ✅ برای ثبت آمار قیف فروش
 
-console.log('🟢 AI CORE v3.0 - ULTIMATE (Options + Batch Order + Filter Safe)');
+console.log(
+  '🟢 AI CORE v4.0 - FULL (RAG + Shop + Tools + Analytics + FilterGuard)'
+);
 
 // --- CONFIGURATION ---
 const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
 const apiKey = process.env.AZURE_OPENAI_KEY;
 const apiVersion = '2024-05-01-preview';
+// نام‌های Deployment در آژور
 const chatDeployment = process.env.AZURE_OPENAI_DEPLOYMENT_CHAT;
 const embeddingDeployment = process.env.AZURE_OPENAI_DEPLOYMENT_EMBEDDING;
 
@@ -19,7 +23,7 @@ const searchEndpoint = process.env.AZURE_SEARCH_ENDPOINT;
 const searchKey = process.env.AZURE_SEARCH_KEY;
 const indexName = process.env.AZURE_SEARCH_INDEX_NAME || 'knowledge-base-index';
 
-// 1. Clients
+// 1. ساخت کلاینت‌های OpenAI و Search
 const openai = new AzureOpenAI({ endpoint, apiKey, apiVersion });
 const searchIndexClient = new SearchIndexClient(
   searchEndpoint,
@@ -123,7 +127,7 @@ const aiCore = {
   },
 
   // ============================================================
-  // بخش ۲: ابزارهای تحلیل (CRM و لحن)
+  // بخش ۲: ابزارهای تحلیل (CRM و Tone Wizard)
   // ============================================================
 
   analyzeTone: async (samples) => {
@@ -144,7 +148,7 @@ const aiCore = {
       return JSON.parse(response.choices[0].message.content)
         .generatedSystemPrompt;
     } catch (e) {
-      return 'تو یک دستیار هوشمند هستی.';
+      return 'تو یک دستیار هوشمند و مودب هستی.';
     }
   },
 
@@ -166,7 +170,29 @@ const aiCore = {
   },
 
   // ============================================================
-  // بخش ۳: مغز اصلی چت (Chat & Tools Logic)
+  // بخش ۳: سیستم ثبت آمار (Analytics Helper)
+  // ============================================================
+
+  trackEvent: async (eventType, contextData, metaData = {}) => {
+    try {
+      // اگر اطلاعات کانال موجود نیست، ثبت نکن
+      if (!contextData || !contextData.channelId) return;
+
+      await AnalyticsEvent.create({
+        ig_accountId: contextData.channelId,
+        persona_id: contextData.personaId || null, // ثبت پرسونای فعال
+        user_id: contextData.senderId || 'unknown',
+        eventType,
+        metaData,
+      });
+      // console.log(`📊 Event Tracked: ${eventType}`);
+    } catch (e) {
+      console.error('Analytics Tracking Error:', e.message);
+    }
+  },
+
+  // ============================================================
+  // بخش ۴: مغز اصلی چت (Chat & Tools Logic)
   // ============================================================
 
   ask: async (params) => {
@@ -174,6 +200,13 @@ const aiCore = {
       const { userText, systemPrompt, history, connection, contextData } =
         params;
       const igAccountId = connection._id || connection.ig_userId;
+
+      // آماده‌سازی کانتکست برای ثبت آمار
+      const analyticsContext = {
+        channelId: igAccountId,
+        personaId: contextData?.personaId,
+        senderId: contextData?.senderId,
+      };
 
       // الف) جستجو در پایگاه دانش (RAG)
       let ragContext = '';
@@ -196,6 +229,7 @@ const aiCore = {
         }
       }
 
+      // ب) ترکیب پرامپت‌ها
       const fullSystemPrompt = `${systemPrompt}\n\n[KNOWLEDGE BASE]\n${
         ragContext || 'No extra info.'
       }`;
@@ -206,17 +240,18 @@ const aiCore = {
         { role: 'user', content: userText },
       ];
 
-      // ج) درخواست اول به مدل
+      // ج) درخواست اول به مدل (با مدیریت خطای فیلتر محتوا)
       let response;
       try {
         response = await openai.chat.completions.create({
           model: chatDeployment,
           messages: messages,
-          temperature: 0.2,
+          temperature: 0.2, // دما پایین برای دقت در ابزارها
           tools: toolsDefinition,
           tool_choice: 'auto',
         });
       } catch (apiError) {
+        // هندل کردن خطای 400 (Content Filter)
         if (
           apiError.status === 400 &&
           apiError.message &&
@@ -229,14 +264,16 @@ const aiCore = {
               'متاسفانه پیام شما توسط سیستم امنیتی شناسایی شد. لطفاً با بیانی دیگر تلاش کنید.',
           };
         }
-        throw apiError;
+        throw apiError; // خطاهای دیگر را پرتاب کن
       }
 
       const responseMessage = response.choices[0].message;
 
-      // د) بررسی فراخوانی ابزار
+      // د) بررسی فراخوانی ابزار (Tool Calls)
       if (responseMessage.tool_calls) {
+        // ✅ نکته حیاتی: اضافه کردن پیام مدل به تاریخچه
         messages.push(responseMessage);
+
         console.log(
           `🛠️ AI Triggered ${responseMessage.tool_calls.length} Tool(s)`
         );
@@ -246,20 +283,27 @@ const aiCore = {
         let isOptionChip = false;
         let optionData = null;
 
+        // اجرای تمام ابزارها (Loop استاندارد)
         for (const toolCall of responseMessage.tool_calls) {
           const fnName = toolCall.function.name;
           let args = {};
           try {
             args = JSON.parse(toolCall.function.arguments);
-          } catch (e) {
-            console.error('JSON Error', e);
+          } catch (parseErr) {
+            console.error('JSON Parse Error:', parseErr);
           }
 
           let toolResult = 'Done';
           console.log(`🔹 Executing: ${fnName}`);
 
           try {
+            // --- 1. Check Stock ---
             if (fnName === 'check_product_stock') {
+              // ثبت آمار: سرچ محصول
+              await aiCore.trackEvent('PRODUCT_SEARCH', analyticsContext, {
+                query: args.query,
+              });
+
               const products = await wooService.searchProducts(
                 connection,
                 args.query
@@ -268,11 +312,20 @@ const aiCore = {
                 toolResult = JSON.stringify(products);
                 isProductList = true;
                 productData = products;
+                // ثبت آمار: محصول پیدا شد
+                await aiCore.trackEvent('PRODUCT_FOUND', analyticsContext, {
+                  count: products.length,
+                });
               } else {
                 toolResult = 'No products found.';
               }
-            } else if (fnName === 'create_order') {
+            }
+            // --- 2. Create Order ---
+            else if (fnName === 'create_order') {
+              // پشتیبانی از هر دو فرمت (آرایه یا تکی)
               let orderPayload = { ...args };
+
+              // اگر هوش مصنوعی فرمت قدیمی فرستاد، تبدیل به آرایه کن
               if (!orderPayload.items && orderPayload.productId) {
                 orderPayload.items = [
                   {
@@ -281,12 +334,24 @@ const aiCore = {
                   },
                 ];
               }
+
               const order = await wooService.createOrder(
                 connection,
                 orderPayload
               );
+
+              if (order.success) {
+                // ✅ ثبت آمار: لینک ساخته شد (مهمترین KPI)
+                await aiCore.trackEvent('LINK_GENERATED', analyticsContext, {
+                  orderId: order.order_id,
+                  amount: order.total,
+                });
+              }
+
               toolResult = JSON.stringify(order);
-            } else if (fnName === 'save_lead_info' || fnName === 'save_lead') {
+            }
+            // --- 3. Save Lead ---
+            else if (fnName === 'save_lead_info' || fnName === 'save_lead') {
               const leadData = {
                 ig_accountId: connection._id,
                 platform: contextData?.platform || 'web',
@@ -296,9 +361,13 @@ const aiCore = {
                 interest_product: args.productName,
               };
               await Lead.create(leadData);
+
+              // ثبت آمار: لید گرفته شد
+              await aiCore.trackEvent('LEAD_CAPTURED', analyticsContext);
+
               toolResult = 'Lead saved successfully.';
             }
-            // ✅ هندل کردن ابزار دکمه‌های گزینه‌ای
+            // --- 4. Ask Options (Chips) ---
             else if (fnName === 'ask_multiple_choice') {
               isOptionChip = true;
               optionData = {
@@ -309,13 +378,14 @@ const aiCore = {
               toolResult = 'Options displayed to user.';
             }
           } catch (err) {
-            console.error(`❌ Tool Error (${fnName}):`, err.message);
+            console.error(`❌ Tool Execution Error (${fnName}):`, err.message);
             toolResult = JSON.stringify({
               error: 'Failed',
               details: err.message,
             });
           }
 
+          // ✅ اضافه کردن نتیجه ابزار به تاریخچه با ID صحیح
           messages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
@@ -323,12 +393,12 @@ const aiCore = {
           });
         }
 
-        // 1. اگر ابزار دکمه‌ای بود، مستقیماً برگردان (بدون متن اضافه)
+        // 1. اگر ابزار دکمه‌ای بود
         if (isOptionChip && optionData) {
           return optionData;
         }
 
-        // 2. اگر فقط لیست محصول بود
+        // 2. اگر خروجی کاروسل محصول بود (و فقط همین یک ابزار صدا شده بود)
         if (
           isProductList &&
           productData &&
@@ -337,10 +407,10 @@ const aiCore = {
           return { type: 'products', data: productData };
         }
 
-        // ه) درخواست دوم (پاسخ نهایی)
+        // ه) درخواست دوم برای پاسخ نهایی متنی (با هندلینگ خطای فیلتر)
         try {
           const finalResponse = await openai.chat.completions.create({
-            model: chatDeployment,
+            model: chatDeployment, // نام متغیر صحیح
             messages: messages,
           });
           return {
@@ -355,6 +425,7 @@ const aiCore = {
           ) {
             console.warn('⚠️ Azure Content Filter Triggered on Request 2');
             const lastMsg = messages[messages.length - 1];
+            // اگر سفارش ثبت شده بود اما متن فیلتر شد، پیام موفقیت دستی بده
             if (
               lastMsg.role === 'tool' &&
               lastMsg.content.includes('"success":true')
@@ -362,18 +433,22 @@ const aiCore = {
               return {
                 type: 'text',
                 content:
-                  'سفارش شما ثبت شد، اما سیستم قادر به تولید پیام نهایی نبود. لطفاً لینک پرداخت را بررسی کنید.',
+                  'سفارش شما با موفقیت ثبت شد. لطفاً برای پرداخت روی لینک‌های ارسال شده کلیک کنید.',
               };
             }
-            return { type: 'text', content: 'خطا در تولید پاسخ نهایی.' };
+            return {
+              type: 'text',
+              content: 'متاسفانه در تولید پاسخ نهایی خطایی رخ داد.',
+            };
           }
           throw apiError;
         }
       }
 
+      // اگر ابزاری صدا زده نشد
       return { type: 'text', content: responseMessage.content };
     } catch (e) {
-      console.error('❌ AI Core Error:', e.message);
+      console.error('❌ AI Core Critical Error:', e.message);
       return {
         type: 'text',
         content: 'متاسفانه خطایی در سرور رخ داد. لطفا دوباره تلاش کنید.',
